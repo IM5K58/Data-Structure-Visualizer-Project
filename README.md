@@ -5,6 +5,8 @@
 
 A web application that visualizes data structures with real-time animations based on C++ code input.
 
+### 🌐 [Live Demo](https://data-structure-visualizer-d.vercel.app/)
+
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)
 ![Vite](https://img.shields.io/badge/Vite-7-646CFF?logo=vite&logoColor=white)
