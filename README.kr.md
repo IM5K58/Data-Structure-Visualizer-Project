@@ -5,6 +5,8 @@
 
 C++ 코드를 입력하면 **Stack, Queue, Array, Linked List** 자료구조를 실시간 애니메이션으로 시각화하는 웹 애플리케이션입니다.
 
+### 🌐 [웹에서 체험](https://data-structure-visualizer-d.vercel.app/)
+
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)
 ![Vite](https://img.shields.io/badge/Vite-7-646CFF?logo=vite&logoColor=white)
