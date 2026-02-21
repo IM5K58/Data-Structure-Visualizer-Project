@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 interface Props {
     onCodeChange: (code: string) => void;
@@ -32,8 +32,22 @@ ll.push_back(30);
 ll.push_back(40);
 ll.pop_back();`;
 
+const SUGGESTIONS = [
+    'stack', 'queue', 'list', 'vector', 'int', 'string', 'double', 'bool', 'void',
+    'push', 'pop', 'top', 'front', 'push_back', 'push_front', 'insert', 'remove',
+    'size', 'empty', 'if', 'else', 'for', 'while', 'main', 'return', 'true', 'false'
+];
+
 export default function CodeInput({ onCodeChange }: Props) {
     const [code, setCode] = useState(DEFAULT_CODE);
+    const [suggestionState, setSuggestionState] = useState({
+        visible: false,
+        list: [] as string[],
+        index: 0,
+        word: '',
+        cursorPos: { top: 0, left: 0 }
+    });
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
 
     useEffect(() => {
         onCodeChange(code);
@@ -42,13 +56,88 @@ export default function CodeInput({ onCodeChange }: Props) {
     const handleChange = (value: string) => {
         setCode(value);
         onCodeChange(value);
+
+        // 자동 완성 로직
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+
+        const selectionStart = textarea.selectionStart;
+        const textBeforeCursor = value.substring(0, selectionStart);
+        const match = textBeforeCursor.match(/\b(\w+)$/);
+
+        if (match) {
+            const word = match[1];
+            const filtered = SUGGESTIONS.filter(s => s.startsWith(word) && s !== word);
+
+            if (filtered.length > 0) {
+                // 커서 위치 근처에 띄우기 위한 좌표 계산
+                const lines = textBeforeCursor.split('\n');
+                const lineNum = lines.length;
+                const charNum = lines[lines.length - 1].length;
+                
+                setSuggestionState({
+                    visible: true,
+                    list: filtered,
+                    index: 0,
+                    word: word,
+                    cursorPos: { 
+                        top: lineNum * 25.6 + 20,
+                        left: charNum * 8 + 50
+                    }
+                });
+            } else {
+                setSuggestionState(prev => ({ ...prev, visible: false }));
+            }
+        } else {
+            setSuggestionState(prev => ({ ...prev, visible: false }));
+        }
+    };
+
+    const applySuggestion = (suggestedWord: string) => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+
+        const { selectionStart } = textarea;
+        const before = code.substring(0, selectionStart - suggestionState.word.length);
+        const after = code.substring(selectionStart);
+        const newValue = before + suggestedWord + after;
+
+        setCode(newValue);
+        onCodeChange(newValue);
+        setSuggestionState(prev => ({ ...prev, visible: false }));
+
+        setTimeout(() => {
+            textarea.selectionStart = textarea.selectionEnd = before.length + suggestedWord.length;
+            textarea.focus();
+        }, 0);
     };
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         const textarea = e.currentTarget;
         const { selectionStart, selectionEnd, value } = textarea;
 
-        // 1. 자동 괄호/따옴표 완성 (Auto-closing)
+        if (suggestionState.visible) {
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setSuggestionState(prev => ({ ...prev, index: (prev.index + 1) % prev.list.length }));
+                return;
+            }
+            if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setSuggestionState(prev => ({ ...prev, index: (prev.index - 1 + prev.list.length) % prev.list.length }));
+                return;
+            }
+            if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault();
+                applySuggestion(suggestionState.list[suggestionState.index]);
+                return;
+            }
+            if (e.key === 'Escape') {
+                setSuggestionState(prev => ({ ...prev, visible: false }));
+                return;
+            }
+        }
+
         const pairs: Record<string, string> = {
             '(': ')',
             '{': '}',
@@ -72,7 +161,6 @@ export default function CodeInput({ onCodeChange }: Props) {
             return;
         }
 
-        // 2. Tab 키 처리
         if (e.key === 'Tab') {
             e.preventDefault();
             const tabSpaces = '    ';
@@ -81,13 +169,11 @@ export default function CodeInput({ onCodeChange }: Props) {
             setCode(newValue);
             onCodeChange(newValue);
 
-            // 커서 위치 조정 (setTimeout으로 렌더링 이후에 적용)
             setTimeout(() => {
                 textarea.selectionStart = textarea.selectionEnd = selectionStart + tabSpaces.length;
             }, 0);
         }
 
-        // 3. Enter 키 처리 (스마트 들여쓰기 및 중괄호 확장)
         if (e.key === 'Enter') {
             const beforeCursor = value.substring(0, selectionStart);
             const afterCursor = value.substring(selectionEnd);
@@ -95,7 +181,6 @@ export default function CodeInput({ onCodeChange }: Props) {
             const lastLine = linesBefore[linesBefore.length - 1] || '';
             const indentation = lastLine.match(/^\s*/)?.[0] || '';
             
-            // 특수 케이스: { | } 사이에서 엔터를 누를 때 (중괄호 확장)
             if (beforeCursor.trim().endsWith('{') && afterCursor.trim().startsWith('}')) {
                 e.preventDefault();
                 const middleIndent = '\n' + indentation + '    ';
@@ -111,7 +196,6 @@ export default function CodeInput({ onCodeChange }: Props) {
                 return;
             }
 
-            // 일반적인 자동 들여쓰기
             const extraIndent = lastLine.trim().endsWith('{') ? '    ' : '';
             const autoIndent = '\n' + indentation + extraIndent;
 
@@ -126,12 +210,10 @@ export default function CodeInput({ onCodeChange }: Props) {
             }, 0);
         }
 
-        // 4. Backspace 키 처리 (들여쓰기 한꺼번에 삭제)
         if (e.key === 'Backspace' && selectionStart === selectionEnd) {
             const beforeCursor = value.substring(0, selectionStart);
             const lastLine = beforeCursor.split('\n').pop() || '';
             
-            // 현재 줄의 커서 앞부분이 오직 공백으로만 이루어져 있고, 4칸 단위일 때
             if (lastLine.length > 0 && lastLine.trim() === '' && lastLine.length % 4 === 0) {
                 e.preventDefault();
                 const newValue = value.substring(0, selectionStart - 4) + value.substring(selectionEnd);
@@ -147,7 +229,7 @@ export default function CodeInput({ onCodeChange }: Props) {
     };
 
     return (
-        <div className="flex flex-col gap-3 h-full">
+        <div className="flex flex-col gap-3 h-full relative">
             <div className="flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-text-secondary tracking-wider uppercase">
                     C++ Code
@@ -158,7 +240,6 @@ export default function CodeInput({ onCodeChange }: Props) {
             </div>
 
             <div className="relative flex-1 rounded-xl overflow-hidden border border-border bg-bg-primary/50">
-                {/* Line numbers gutter */}
                 <div className="absolute inset-y-0 left-0 w-10 bg-white/[0.02] border-r border-border flex flex-col pt-4 overflow-hidden">
                     {code.split('\n').map((_, i) => (
                         <span
@@ -171,6 +252,7 @@ export default function CodeInput({ onCodeChange }: Props) {
                 </div>
 
                 <textarea
+                    ref={textareaRef}
                     value={code}
                     onChange={(e) => handleChange(e.target.value)}
                     onKeyDown={handleKeyDown}
@@ -183,6 +265,29 @@ export default function CodeInput({ onCodeChange }: Props) {
           `}
                     placeholder="Enter your C++ code here..."
                 />
+
+                {suggestionState.visible && (
+                    <div 
+                        className="absolute z-50 bg-bg-secondary border border-border rounded-lg shadow-2xl py-1 min-w-[120px]"
+                        style={{ 
+                            top: suggestionState.cursorPos.top, 
+                            left: Math.min(suggestionState.cursorPos.left, 250)
+                        }}
+                    >
+                        {suggestionState.list.map((item, idx) => (
+                            <div
+                                key={item}
+                                onClick={() => applySuggestion(item)}
+                                className={`
+                                    px-3 py-1.5 text-[12px] font-mono cursor-pointer transition-colors
+                                    ${idx === suggestionState.index ? 'bg-accent-cyan/20 text-accent-cyan' : 'text-text-secondary hover:bg-white/5'}
+                                `}
+                            >
+                                {item}
+                            </div>
+                        ))}
+                    </div>
+                )}
             </div>
         </div>
     );
