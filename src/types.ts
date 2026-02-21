@@ -16,7 +16,7 @@ export interface Command {
     type: CommandType;
     target: TargetType;
     targetName: string;
-    value?: number;
+    value?: number | string | boolean;
     index?: number;
     size?: number;
     raw: string;
@@ -26,24 +26,24 @@ export interface Command {
 export interface StackState {
     type: 'stack';
     name: string;
-    items: { id: string; value: number }[];
+    items: { id: string; value: number | string | boolean }[];
 }
 
 export interface QueueState {
     type: 'queue';
     name: string;
-    items: { id: string; value: number }[];
+    items: { id: string; value: number | string | boolean }[];
 }
 
 export interface ArrayState {
     type: 'array';
     name: string;
-    items: { id: string; value: number | null; index: number }[];
+    items: { id: string; value: number | string | boolean | null; index: number }[];
 }
 
 export interface LinkedListNode {
     id: string;
-    value: number;
+    value: number | string | boolean;
 }
 
 export interface LinkedListState {

@@ -40,7 +40,7 @@ export default function QueueBlock({ data }: Props) {
                                         }
                   `}
                                 >
-                                    {item.value}
+                                    {String(item.value)}
                                 </div>
                             </motion.div>
                         ))}

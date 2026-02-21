@@ -34,7 +34,7 @@ export default function ListNode({ data }: Props) {
                             {/* Node box */}
                             <div className="flex border border-accent-orange/40 rounded-lg overflow-hidden">
                                 <div className="w-[48px] h-[40px] flex items-center justify-center bg-accent-orange/15 text-white font-mono font-semibold text-sm">
-                                    {node.value}
+                                    {String(node.value)}
                                 </div>
                                 <div className="w-[24px] h-[40px] flex items-center justify-center border-l border-accent-orange/30 bg-accent-orange/5">
                                     <div className="w-2 h-2 rounded-full bg-accent-orange/60" />

@@ -35,7 +35,7 @@ export default function StackPlate({ data }: Props) {
                                     }
                 `}
                             >
-                                {item.value}
+                                {String(item.value)}
                             </div>
                             {index === data.items.length - 1 && (
                                 <span className="absolute -right-12 top-1/2 -translate-y-1/2 text-[10px] text-accent-purple font-mono opacity-70">

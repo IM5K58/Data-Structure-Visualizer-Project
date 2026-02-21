@@ -42,7 +42,7 @@ export default function ArrayBlock({ data }: Props) {
                                     animate={{ opacity: 1, scale: 1 }}
                                     className="text-white"
                                 >
-                                    {item.value}
+                                    {String(item.value)}
                                 </motion.span>
                             ) : (
                                 <span className="text-text-muted text-xs">—</span>

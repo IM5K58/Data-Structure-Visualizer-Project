@@ -1,9 +1,8 @@
-
 [![Korean](https://img.shields.io/badge/Language-Korean-red?style=for-the-badge)](./README.kr.md)
 
 # Data Structure Visualizer
 
-A web application that visualizes data structures with real-time animations based on C++ code input.
+A web application that visualizes data structures with real-time animations based on C++ code input. Unlike simple parsers, it features a **Virtual Execution Engine** that simulates code logic, supporting complex control flows and variables.
 
 ### 🌐 [Live Demo](https://data-structure-visualizer-d.vercel.app/)
 
@@ -17,62 +16,62 @@ A web application that visualizes data structures with real-time animations base
 
 ## Key Features
 
-- **🖥️ Code Parsing**: Automatically parses C++ data structure code and commands.
-- **🎬 Step-by-Step Execution**: Supports Run / Pause / Step / Prev controls.
+- **🚀 Virtual Execution Engine**: Simulates real C++ logic including variable assignments and math operations.
+- **🔄 Control Flow Support**: Fully visualizes `for`, `while` loops and `if` conditional branches.
+- **📦 Function Support**: Supports function definitions, recursive calls, and passing data structures by reference (`&`).
+- **🎬 Step-by-Step Execution**: Supports Run / Pause / Step / Prev controls with precise state tracking.
 - **⚡ Adjustable Speed**: Playback speed control from 0.25x to 4x.
 - **🎨 Smooth Animations**: Powered by Framer Motion for fluid data insertion/deletion effects.
-- **📐 Resizable Panels**: Draggable boundary between the code editor and the visualizer.
 - **🌙 Dark Theme**: Premium UI with Neon accents and Glassmorphism design.
 
 ---
 
-## 🗂️ Supported Data Structures
+## 🗂️ Supported Data Structures & Types
 
-| Data Structure | Color | Supported Operations |
-|----------------|-------|----------------------|
-| **Stack** | 🟣 Purple | `push()`, `pop()` |
-| **Queue** | 🔵 Cyan | `push()`, `pop()` |
-| **Array** | 🟢 Green | Declaration `int arr[N]`, Init `{...}`, Assignment `arr[i] = v` |
+| Data Structure | Color | Operations |
+|----------------|-------|------------|
+| **Stack** | 🟣 Purple | `push()`, `pop()`, `top()`, `size()`, `empty()` |
+| **Queue** | 🔵 Cyan | `push()`, `pop()`, `front()`, `size()`, `empty()` |
+| **Array** | 🟢 Green | Declaration `int arr[N]`, Init `{...}`, `arr[i] = v` |
 | **Linked List** | 🟠 Orange | `push_back()`, `push_front()`, `insert()`, `pop_back()`, `pop_front()`, `remove()` |
+
+**Supported Value Types:** `int`, `double`, `string`, `bool`, `char`
 
 ---
 
-## 🛠️ Supported C++ Syntax
+## 🛠️ Advanced C++ Syntax Examples
 
-### ✅ Recognizable Patterns
-
+### ✅ Control Flow & Variables
 ```cpp
-// Declarations
 stack<int> s;
-queue<int> q;
-int arr[5] = {1, 2, 3, 4, 5};
-list<int> ll;
-
-// Stack Operations
-s.push(10);
-s.pop();
-
-// Queue Operations
-q.push(5);
-q.pop();
-
-// Array Operations
-arr[2] = 42;
-
-// Linked List Operations
-ll.push_back(10);
-ll.push_front(20);
-ll.pop_back();
-ll.pop_front();
-ll.remove(10);
+for (int i = 1; i <= 5; i++) {
+    if (i % 2 == 0) {
+        s.push(i * 10);
+    }
+}
 ```
 
-### 🚧Currently Unsupported (Planned)
+### ✅ Recursion & Functions
+```cpp
+void fill(stack<int>& s, int n) {
+    if (n <= 0) return;
+    s.push(n);
+    fill(s, n - 1);
+}
 
-- Variable references (e.g., int x = 5; s.push(x);)
-- Control flow (for, while, if)
-- Function definitions and calls
-- Types other than int (e.g., string, double)
+int main() {
+    stack<int> myStack;
+    fill(myStack, 3);
+}
+```
+
+### ✅ String & List Operations
+```cpp
+list<string> names;
+string msg = "Hello";
+names.push_back(msg);
+names.push_back("World");
+```
 
 ---
 
@@ -95,13 +94,6 @@ npm run dev
 
 Open your browser and navigate to `http://localhost:5173`.
 
-### Production Build
-
-```bash
-npm run build
-npm run preview
-```
-
 ---
 
 ## ️📂 Project Structure
@@ -111,40 +103,24 @@ src/
 ├── types.ts                  # Common type definitions (Command, State, etc.)
 ├── App.tsx                   # Main layout (Resizable panels)
 ├── utils/
-│   └── parser.ts             # C++ Code → Command Parser
+│   └── parser.ts             # Virtual Execution Engine (C++ Simlator)
 ├── hooks/
 │   └── useVisualizer.ts      # State management using useReducer
 └── components/
     ├── CodeInput.tsx         # Code editor area (with line numbers)
-    ├── Controls.tsx          # Run/Pause/Prev/Next/Reset + Speed controls
+    ├── Controls.tsx          # Execution controls & Speed slider
     ├── Visualizer.tsx        # Visualizer router per data structure
-    └── DataStructures/
-        ├── StackPlate.tsx    # Vertical Stack visualization
-        ├── QueueBlock.tsx    # Horizontal Queue visualization
-        ├── ArrayBlock.tsx    # Index-based Array visualization
-        └── ListNode.tsx      # Linked List + SVG Arrows
+    └── DataStructures/       # Visualization components
 ```
-
----
-
-## ️💻 Tech Stack
-
-| Category | Technology | Purpose |
-|----------|-----------|---------|
-| Framework | React 19 | UI Components |
-| Language | TypeScript 5.9 | Type Safety |
-| Bundler | Vite 7 | Fast HMR & Build |
-| Styling | Tailwind CSS 4 | Utility-first Styling |
-| Animation | Framer Motion 12 | Transitions & Effects |
 
 ---
 
 ##  🎮 Usage
 
-1. **Write Code**: Enter valid C++ data structure code in the right panel.
-2. **▶ Run**: Automatically execute the entire code.
+1. **Write Code**: Enter valid C++ code in the left panel. (Includes `int main()`, loops, functions)
+2. **▶ Run**: Execute the entire simulation and collect animation steps.
 3. **⏸ Pause**: pause execution. Press Run again to resume.
-4. **⏮ Prev / Next ⏭**: Step through the execution one line at a time.
+4. **⏮ Prev / Next ⏭**: Step through the execution steps.
 5. **↺ Reset**: Clear all states and reset visualization.
 6. **Speed**: Adjust animation speed (0.25x - 4x).
 
