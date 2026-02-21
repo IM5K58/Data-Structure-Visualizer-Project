@@ -48,14 +48,46 @@ export default function CodeInput({ onCodeChange }: Props) {
         cursorPos: { top: 0, left: 0 }
     });
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const gutterRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         onCodeChange(code);
     }, []);
 
+    const handleScroll = () => {
+        if (textareaRef.current && gutterRef.current) {
+            gutterRef.current.scrollTop = textareaRef.current.scrollTop;
+        }
+    };
+
+    const scrollToCursor = () => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+
+        const { selectionStart, value } = textarea;
+        const linesBefore = value.substring(0, selectionStart).split('\n');
+        const currentLineNum = linesBefore.length;
+        const lineHeight = 25.6; // 1.6rem (text-[13px] leading-[1.6rem] 기준)
+        const paddingTop = 16;   // pt-4 (16px)
+        
+        const cursorY = (currentLineNum - 1) * lineHeight + paddingTop;
+        const visibleTop = textarea.scrollTop;
+        const visibleBottom = visibleTop + textarea.clientHeight;
+
+        // 커서가 현재 보이는 영역보다 위에 있거나 아래에 있을 때 스크롤 조절
+        if (cursorY < visibleTop + paddingTop) {
+            textarea.scrollTop = cursorY - paddingTop;
+        } else if (cursorY + lineHeight > visibleBottom - paddingTop) {
+            textarea.scrollTop = cursorY + lineHeight - textarea.clientHeight + paddingTop + 20; // 약간의 여유분(20px) 추가
+        }
+    };
+
     const handleChange = (value: string) => {
         setCode(value);
         onCodeChange(value);
+
+        // 스크롤 추적 실행
+        setTimeout(scrollToCursor, 0);
 
         // 자동 완성 로직
         const textarea = textareaRef.current;
@@ -81,7 +113,7 @@ export default function CodeInput({ onCodeChange }: Props) {
                     index: 0,
                     word: word,
                     cursorPos: { 
-                        top: lineNum * 25.6 + 20,
+                        top: lineNum * 25.6 + 20 - textarea.scrollTop, // 스크롤 위치 반영
                         left: charNum * 8 + 50
                     }
                 });
@@ -109,12 +141,18 @@ export default function CodeInput({ onCodeChange }: Props) {
         setTimeout(() => {
             textarea.selectionStart = textarea.selectionEnd = before.length + suggestedWord.length;
             textarea.focus();
+            scrollToCursor(); // 추천 적용 후에도 커서 추적
         }, 0);
     };
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         const textarea = e.currentTarget;
         const { selectionStart, selectionEnd, value } = textarea;
+
+        // 키 입력 후 스크롤 추적 (비동기 처리로 텍스트 업데이트 반영 기다림)
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+            setTimeout(scrollToCursor, 0);
+        }
 
         if (suggestionState.visible) {
             if (e.key === 'ArrowDown') {
@@ -157,6 +195,7 @@ export default function CodeInput({ onCodeChange }: Props) {
 
             setTimeout(() => {
                 textarea.selectionStart = textarea.selectionEnd = selectionStart + 1;
+                scrollToCursor();
             }, 0);
             return;
         }
@@ -171,6 +210,7 @@ export default function CodeInput({ onCodeChange }: Props) {
 
             setTimeout(() => {
                 textarea.selectionStart = textarea.selectionEnd = selectionStart + tabSpaces.length;
+                scrollToCursor();
             }, 0);
         }
 
@@ -192,6 +232,7 @@ export default function CodeInput({ onCodeChange }: Props) {
 
                 setTimeout(() => {
                     textarea.selectionStart = textarea.selectionEnd = selectionStart + middleIndent.length;
+                    scrollToCursor();
                 }, 0);
                 return;
             }
@@ -207,6 +248,7 @@ export default function CodeInput({ onCodeChange }: Props) {
 
             setTimeout(() => {
                 textarea.selectionStart = textarea.selectionEnd = selectionStart + autoIndent.length;
+                scrollToCursor();
             }, 0);
         }
 
@@ -223,6 +265,7 @@ export default function CodeInput({ onCodeChange }: Props) {
 
                 setTimeout(() => {
                     textarea.selectionStart = textarea.selectionEnd = selectionStart - 4;
+                    scrollToCursor();
                 }, 0);
             }
         }
@@ -240,7 +283,10 @@ export default function CodeInput({ onCodeChange }: Props) {
             </div>
 
             <div className="relative flex-1 rounded-xl overflow-hidden border border-border bg-bg-primary/50">
-                <div className="absolute inset-y-0 left-0 w-10 bg-white/[0.02] border-r border-border flex flex-col pt-4 overflow-hidden">
+                <div 
+                    ref={gutterRef}
+                    className="absolute inset-y-0 left-0 w-10 bg-white/[0.02] border-r border-border flex flex-col pt-4 overflow-hidden pointer-events-none"
+                >
                     {code.split('\n').map((_, i) => (
                         <span
                             key={i}
@@ -249,6 +295,8 @@ export default function CodeInput({ onCodeChange }: Props) {
                             {i + 1}
                         </span>
                     ))}
+                    {/* Extra space at the bottom to match textarea padding */}
+                    <div className="min-h-[1.6rem]" />
                 </div>
 
                 <textarea
@@ -256,6 +304,7 @@ export default function CodeInput({ onCodeChange }: Props) {
                     value={code}
                     onChange={(e) => handleChange(e.target.value)}
                     onKeyDown={handleKeyDown}
+                    onScroll={handleScroll}
                     spellCheck={false}
                     className={`
             w-full h-full resize-none bg-transparent text-text-primary
