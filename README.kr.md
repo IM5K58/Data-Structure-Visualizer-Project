@@ -1,10 +1,10 @@
 [![English](https://img.shields.io/badge/Language-English-blue?style=for-the-badge)](./README.md)
 
-# 데이터 구조 시각화 도구 (Data Structure Visualizer)
+# 자료 구조 시각화 도구 (Data Structure Visualizer)
 
-사용자가 입력한 C++ 코드를 바탕으로 데이터 구조의 변화를 실시간 애니메이션으로 보여주는 웹 애플리케이션입니다. 단순한 텍스트 파싱을 넘어, **가상 실행 엔진(Virtual Execution Engine)**을 통해 복잡한 제어 흐름과 변수 연산을 시뮬레이션합니다.
+사용자가 입력한 C++ 코드를 바탕으로 데이터 구조의 변화를 실시간 애니메이션으로 보여주는 웹 애플리케이션입니다. 단순한 텍스트 파싱을 넘어, 가상 실행 엔진(Virtual Execution Engine)을 통해 복잡한 제어 흐름과 변수 연산을 시뮬레이션합니다.
 
-### 🌐 [라이브 데모](https://data-structure-visualizer-d.vercel.app/)
+### 🌐 [웹에서 체험하기](https://data-structure-visualizer-project.vercel.app/)
 
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)
