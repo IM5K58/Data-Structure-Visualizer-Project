@@ -2,10 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import CodeInput from './components/CodeInput';
 import Controls from './components/Controls';
 import Visualizer from './components/Visualizer';
+import HowToUse from './components/HowToUse';
 import { useVisualizer } from './hooks/useVisualizer';
+import { AnimatePresence } from 'framer-motion';
 
 function App() {
   const { state, loadCode, step, stepBack, run, reset, stopAutoRun, setSpeed } = useVisualizer();
+  const [showHelp, setShowHelp] = useState(false);
   const codeRef = useRef('');
 
   // --- Resizable panel state ---
@@ -102,12 +105,27 @@ function App() {
           </div>
 
           <div className="flex items-center gap-2">
-            <span className="text-[10px] text-text-muted font-mono px-2 py-1 rounded-md bg-white/5 border border-border">
-              v0.1.0-MVP
-            </span>
+            <button
+              onClick={() => setShowHelp(true)}
+              className="group relative flex items-center gap-2 px-3 py-1.5 rounded-lg bg-accent-cyan/10 border border-accent-cyan/20 hover:bg-accent-cyan/20 hover:border-accent-cyan/40 transition-all duration-300"
+            >
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-cyan opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-accent-cyan"></span>
+              </span>
+              <span className="text-[11px] font-bold text-accent-cyan tracking-wider">
+                HOW TO USE?
+              </span>
+            </button>
           </div>
         </div>
       </header>
+
+      <AnimatePresence>
+        {showHelp && (
+          <HowToUse onBack={() => setShowHelp(false)} />
+        )}
+      </AnimatePresence>
 
       {/* Main content */}
       <main ref={containerRef} className="flex-1 flex overflow-hidden">
