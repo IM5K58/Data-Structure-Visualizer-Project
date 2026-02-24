@@ -12,10 +12,10 @@ function preprocess(code: string): string {
 
     const processedLines = lines.map((line) => {
         let pline = line.trim();
-        
+
         // 1. 주석 및 전처리기 무시
         if (!pline || pline.startsWith('//') || pline.startsWith('#')) return '';
-        
+
         // 2. common C++ boilerplate 무시
         if (pline.startsWith('using namespace') || pline.includes('cout <<') || pline.includes('cin >>')) return '';
 
@@ -27,9 +27,11 @@ function preprocess(code: string): string {
         pline = pline.replace(/std::/g, '');
 
         // 5. 데이터 구조 선언 변환
-        pline = pline.replace(/(?:stack|vector|queue|list|LinkedList)\s*<.*?>\s+(\w+)\s*;/g, (match, name) => {
-            if (match.includes('stack')) return `const ${name} = __createStack("${name}");`;
-            if (match.includes('queue')) return `const ${name} = __createQueue("${name}");`;
+        pline = pline.replace(/(?:stack|vector|queue|list|LinkedList|tree|BST)\s*<.*?>\s+(\w+)\s*;/gi, (match, name) => {
+            const lowerMatch = match.toLowerCase();
+            if (lowerMatch.includes('stack')) return `const ${name} = __createStack("${name}");`;
+            if (lowerMatch.includes('queue')) return `const ${name} = __createQueue("${name}");`;
+            if (lowerMatch.includes('tree') || lowerMatch.includes('bst')) return `const ${name} = __createTree("${name}");`;
             return `const ${name} = __createList("${name}");`;
         });
 
@@ -38,13 +40,13 @@ function preprocess(code: string): string {
         const funcRegex = new RegExp(`^${typeRegexStr}\\s+(\\w+)\\s*\\(([^)]*)\\)\\s*\\{?`, 'g');
         pline = pline.replace(funcRegex, (_match, _type, name, args) => {
             if (name === 'main') hasMain = true;
-            
+
             // 인자에서 타입 및 참조자(&) 제거
             const cleanArgs = args.split(',').map((arg: string) => {
                 const parts = arg.trim().split(/\s+/);
                 return parts[parts.length - 1].replace('&', ''); // 마지막 단어(변수명)만 추출하고 & 제거
             }).filter(Boolean).join(', ');
-            
+
             return `function ${name}(${cleanArgs}) {`;
         });
 
@@ -100,7 +102,7 @@ export function parseCodeWithContext(code: string): Command[] {
 
     const helpers = {
         __setLine: (line: string) => { currentRawLine = line; },
-        
+
         __createStack: (name: string) => {
             const _items: ValueType[] = [];
             const obj = {
@@ -135,6 +137,17 @@ export function parseCodeWithContext(code: string): Command[] {
                 front: () => _items[0],
                 size: () => _items.length,
                 empty: () => _items.length === 0
+            };
+        },
+
+        __createTree: (name: string) => {
+            return {
+                insert: (val: number) => {
+                    commands.push({ type: 'TREE_INSERT', target: 'tree', targetName: name, value: val, raw: currentRawLine });
+                },
+                remove: (val: number) => {
+                    commands.push({ type: 'TREE_DELETE', target: 'tree', targetName: name, value: val, raw: currentRawLine });
+                }
             };
         },
 

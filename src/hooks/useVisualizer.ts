@@ -8,6 +8,8 @@ import type {
     QueueState,
     ArrayState,
     LinkedListState,
+    TreeState,
+    TreeNode,
 } from '../types';
 import { nextId, resetParserIds, parseCodeWithContext } from '../utils/parser';
 
@@ -41,6 +43,9 @@ function findOrCreateStructure(
             break;
         case 'linkedlist':
             newStructure = { type: 'linkedlist', name: targetName, nodes: [] };
+            break;
+        case 'tree':
+            newStructure = { type: 'tree', name: targetName, root: null };
             break;
     }
     return [...structures, newStructure];
@@ -128,6 +133,65 @@ function executeCommand(
                 return {
                     ...list,
                     nodes: list.nodes.slice(0, -1),
+                };
+            }
+            case 'TREE_INSERT': {
+                const tree = s as TreeState;
+                const value = Number(command.value);
+
+                const insertNode = (root: TreeNode | null): TreeNode => {
+                    if (!root) return { id: nextId(), value, left: null, right: null };
+                    if (value < root.value) root.left = insertNode(root.left);
+                    else root.right = insertNode(root.right);
+                    return root;
+                };
+
+                return {
+                    ...tree,
+                    root: insertNode(tree.root ? JSON.parse(JSON.stringify(tree.root)) : null)
+                };
+            }
+            case 'TREE_DELETE': {
+                const tree = s as TreeState;
+                const value = Number(command.value);
+
+                const findMin = (node: TreeNode): TreeNode => {
+                    while (node.left) node = node.left;
+                    return node;
+                };
+
+                const deleteNode = (root: TreeNode | null): TreeNode | null => {
+                    if (!root) return null;
+                    if (value < root.value) root.left = deleteNode(root.left);
+                    else if (value > root.value) root.right = deleteNode(root.right);
+                    else {
+                        if (!root.left) return root.right;
+                        if (!root.right) return root.left;
+                        const temp = findMin(root.right);
+                        root.value = temp.value;
+                        root.right = deleteNode(root.right); // Note: this actually needs to delete the min value node
+                    }
+                    return root;
+                };
+
+                // Corrected delete logic for BST
+                const removeNode = (root: TreeNode | null, val: number): TreeNode | null => {
+                    if (!root) return null;
+                    if (val < root.value) root.left = removeNode(root.left, val);
+                    else if (val > root.value) root.right = removeNode(root.right, val);
+                    else {
+                        if (!root.left) return root.right;
+                        if (!root.right) return root.left;
+                        const temp = findMin(root.right);
+                        root.value = temp.value;
+                        root.right = removeNode(root.right, temp.value);
+                    }
+                    return root;
+                };
+
+                return {
+                    ...tree,
+                    root: removeNode(tree.root ? JSON.parse(JSON.stringify(tree.root)) : null, value)
                 };
             }
             default:

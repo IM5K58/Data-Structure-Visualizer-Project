@@ -8,9 +8,11 @@ export type CommandType =
     | 'ARRAY_SET'
     | 'LIST_INSERT'
     | 'LIST_REMOVE'
+    | 'TREE_INSERT'
+    | 'TREE_DELETE'
     | 'UNKNOWN';
 
-export type TargetType = 'stack' | 'queue' | 'array' | 'linkedlist';
+export type TargetType = 'stack' | 'queue' | 'array' | 'linkedlist' | 'tree';
 
 export interface Command {
     type: CommandType;
@@ -52,11 +54,25 @@ export interface LinkedListState {
     nodes: LinkedListNode[];
 }
 
+export interface TreeNode {
+    id: string;
+    value: number;
+    left: TreeNode | null;
+    right: TreeNode | null;
+}
+
+export interface TreeState {
+    type: 'tree';
+    name: string;
+    root: TreeNode | null;
+}
+
 export type DataStructureState =
     | StackState
     | QueueState
     | ArrayState
-    | LinkedListState;
+    | LinkedListState
+    | TreeState;
 
 // ===== Visualizer State =====
 export interface VisualizerState {

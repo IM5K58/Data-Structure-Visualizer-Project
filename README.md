@@ -20,9 +20,10 @@ A web application that visualizes data structures with real-time animations base
 - **🔄 Control Flow Support**: Fully visualizes `for`, `while` loops and `if` conditional branches.
 - **📦 Function Support**: Supports function definitions, recursive calls, and passing data structures by reference (`&`).
 - **🎬 Step-by-Step Execution**: Supports Run / Pause / Step / Prev controls with precise state tracking.
+- **📖 Intelligent Help System**: Features a multi-layered help modal with "Deep Dive" guides and a full **Detailed System Docs** page.
+- **🌍 Multilingual Support**: Seamlessly switch between **English** and **Korean** for all instructions and documentation.
 - **⚡ Adjustable Speed**: Playback speed control from 0.25x to 4x.
-- **🎨 Smooth Animations**: Powered by Framer Motion for fluid data insertion/deletion effects.
-- **🌙 Dark Theme**: Premium UI with Neon accents and Glassmorphism design.
+- **🎨 Premium Visuals**: Modern UI with Neon accents, Glassmorphism, and smooth Framer Motion animations.
 
 ---
 
@@ -32,6 +33,7 @@ A web application that visualizes data structures with real-time animations base
 |----------------|-------|------------|
 | **Stack** | 🟣 Purple | `push()`, `pop()`, `top()`, `size()`, `empty()` |
 | **Queue** | 🔵 Cyan | `push()`, `pop()`, `front()`, `size()`, `empty()` |
+| **Tree (BST)** | 🔮 Indigo | `insert(val)`, `remove(val)` |
 | **Array** | 🟢 Green | Declaration `int arr[N]`, Init `{...}`, `arr[i] = v` |
 | **Linked List** | 🟠 Orange | `push_back()`, `push_front()`, `insert()`, `pop_back()`, `pop_front()`, `remove()` |
 
@@ -41,14 +43,16 @@ A web application that visualizes data structures with real-time animations base
 
 ## 🛠️ Advanced C++ Syntax Examples
 
-### ✅ Control Flow & Variables
+### ✅ Control Flow & Binary Search Tree
 ```cpp
-stack<int> s;
-for (int i = 1; i <= 5; i++) {
-    if (i % 2 == 0) {
-        s.push(i * 10);
-    }
+tree<int> t; // or bst<int> t;
+int vals[7] = {20, 10, 30, 5, 15, 25, 35};
+
+for(int i=0; i<7; i++) {
+    t.insert(vals[i]);
 }
+
+t.remove(15);
 ```
 
 ### ✅ Recursion & Functions
@@ -60,8 +64,8 @@ void fill(stack<int>& s, int n) {
 }
 
 int main() {
-    stack<int> myStack;
-    fill(myStack, 3);
+    stack<int> s;
+    fill(s, 3);
 }
 ```
 

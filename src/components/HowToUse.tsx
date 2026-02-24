@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { Language } from '../constants/helpContent';
 import { translations } from '../constants/helpContent';
+import SystemDocs from './SystemDocs';
 
 interface HowToUseProps {
     onBack: () => void;
@@ -11,6 +12,7 @@ const HowToUse = ({ onBack }: HowToUseProps) => {
     const [lang, setLang] = useState<Language>('en');
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [isDeepDive, setIsDeepDive] = useState(false);
+    const [isDocs, setIsDocs] = useState(false);
     const t = translations[lang];
 
     const selectedStructure = t.structures.find(s => s.id === selectedId);
@@ -26,13 +28,13 @@ const HowToUse = ({ onBack }: HowToUseProps) => {
             <header className="sticky top-0 z-20 border-b border-border bg-bg-secondary/80 backdrop-blur-xl">
                 <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
                     <button
-                        onClick={isDeepDive ? () => setIsDeepDive(false) : onBack}
+                        onClick={isDocs ? () => setIsDocs(false) : (isDeepDive ? () => setIsDeepDive(false) : onBack)}
                         className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/5 border border-border hover:bg-white/10 hover:border-border-hover transition-all text-sm font-medium"
                     >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                         </svg>
-                        {isDeepDive ? (lang === 'en' ? 'Back to Overview' : '개요로 돌아가기') : t.backToEditor}
+                        {isDocs || isDeepDive ? (lang === 'en' ? 'Back to Overview' : '개요로 돌아가기') : t.backToEditor}
                     </button>
 
                     <div className="flex items-center gap-3">
@@ -58,7 +60,9 @@ const HowToUse = ({ onBack }: HowToUseProps) => {
             {/* Main Content */}
             <main className="flex-1 max-w-6xl mx-auto px-6 py-12 w-full relative">
                 <AnimatePresence mode="wait">
-                    {!isDeepDive ? (
+                    {isDocs ? (
+                        <SystemDocs key="docs-view" onBack={() => setIsDocs(false)} lang={lang} />
+                    ) : !isDeepDive ? (
                         <motion.div
                             key="grid-view"
                             initial={{ opacity: 0, y: 10 }}
@@ -87,10 +91,21 @@ const HowToUse = ({ onBack }: HowToUseProps) => {
                                     key={`desc-${lang}`}
                                     initial={{ opacity: 0 }}
                                     animate={{ opacity: 1 }}
-                                    className="text-base md:text-lg text-text-secondary max-w-2xl mx-auto leading-relaxed"
+                                    className="text-base md:text-lg text-text-secondary max-w-2xl mx-auto leading-relaxed mb-8"
                                 >
                                     {t.description}
                                 </motion.p>
+
+                                <motion.button
+                                    initial={{ opacity: 0, scale: 0.9 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    whileHover={{ scale: 1.05 }}
+                                    whileTap={{ scale: 0.95 }}
+                                    onClick={() => setIsDocs(true)}
+                                    className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-accent-cyan/20 to-accent-purple/20 border border-white/10 hover:border-accent-cyan/50 text-sm font-bold text-white transition-all shadow-lg shadow-black/20"
+                                >
+                                    {lang === 'ko' ? '기능 및 명령어 상세 Docs 보기' : 'See Detailed System Docs'}
+                                </motion.button>
                             </div>
 
                             {/* Card Grid */}
@@ -192,8 +207,41 @@ const HowToUse = ({ onBack }: HowToUseProps) => {
                                         <div className="space-y-8">
                                             <div className="p-6 rounded-2xl bg-accent-cyan/5 border border-accent-cyan/10">
                                                 <h4 className="text-xs font-bold text-accent-cyan uppercase tracking-widest mb-4">Time Complexity</h4>
-                                                <div className="text-xl font-mono text-white text-center py-4 bg-bg-primary/50 rounded-lg border border-white/5 shadow-inner">
-                                                    {selectedStructure.deepDive.complexity}
+                                                <div className="flex flex-col p-4 bg-bg-primary/50 rounded-xl border border-white/5 shadow-inner text-left">
+                                                    {/* 메인 통계 영역 */}
+                                                    <div className="flex flex-col gap-2.5">
+                                                        {selectedStructure.deepDive.complexity.split('|').map((part, i) => {
+                                                            const [label, value] = part.split(':').map(s => s.trim());
+                                                            const bigOMatch = value.match(/^(O\(.*?\))(?:\s+\((.*)\))?$/);
+                                                            const mainValue = bigOMatch ? bigOMatch[1] : value;
+                                                            const hasNote = bigOMatch && bigOMatch[2];
+                                                            return (
+                                                                <div key={i} className="flex justify-between items-center gap-4 text-[13px]">
+                                                                    <span className="text-text-secondary font-medium">{label}</span>
+                                                                    <span className="font-mono text-accent-cyan font-bold whitespace-nowrap">
+                                                                        {mainValue}
+                                                                        {hasNote && <span className="ml-1 text-[10px] opacity-60">*</span>}
+                                                                    </span>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+
+                                                    {/* 주석(Footnote) 영역 */}
+                                                    {selectedStructure.deepDive.complexity.match(/O\(.*?\)\s+\(.*\)/) && (
+                                                        <div className="mt-4 pt-3 border-t border-white/10 space-y-1.5">
+                                                            {selectedStructure.deepDive.complexity.split('|').map((part, i) => {
+                                                                const noteMatch = part.match(/O\(.*?\)\s+\((.*)\)/);
+                                                                if (!noteMatch) return null;
+                                                                return (
+                                                                    <div key={i} className="flex gap-1.5 text-[10px] text-text-muted italic leading-snug">
+                                                                        <span className="flex-shrink-0 text-accent-cyan/60">*</span>
+                                                                        <span>{noteMatch[1]}</span>
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    )}
                                                 </div>
                                             </div>
 
