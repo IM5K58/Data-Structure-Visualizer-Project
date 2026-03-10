@@ -105,6 +105,16 @@ function App() {
           </div>
 
           <div className="flex items-center gap-2">
+            <a
+              href="https://vierasion.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group relative flex items-center gap-2 px-3 py-1.5 rounded-lg bg-accent-purple/10 border border-accent-purple/20 hover:bg-accent-purple/20 hover:border-accent-purple/40 transition-all duration-300"
+            >
+              <span className="text-[11px] font-bold text-accent-purple tracking-wider">
+                ABOUT US
+              </span>
+            </a>
             <button
               onClick={() => setShowHelp(true)}
               className="group relative flex items-center gap-2 px-3 py-1.5 rounded-lg bg-accent-cyan/10 border border-accent-cyan/20 hover:bg-accent-cyan/20 hover:border-accent-cyan/40 transition-all duration-300"

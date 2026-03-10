@@ -4,6 +4,7 @@ import QueueBlock from './DataStructures/QueueBlock';
 import ArrayBlock from './DataStructures/ArrayBlock';
 import ListNode from './DataStructures/ListNode';
 import TreeChart from './DataStructures/TreeChart';
+import GraphView from './DataStructures/GraphView';
 
 interface Props {
     structures: DataStructureState[];
@@ -21,6 +22,8 @@ function renderStructure(structure: DataStructureState) {
             return <ListNode data={structure} />;
         case 'tree':
             return <TreeChart data={structure} />;
+        case 'memory':
+            return <GraphView data={structure} />;
     }
 }
 
@@ -30,6 +33,7 @@ const TYPE_COLORS: Record<string, string> = {
     array: 'border-accent-green/20',
     linkedlist: 'border-accent-orange/20',
     tree: 'border-accent-purple/30',
+    memory: 'border-accent-purple/40',
 };
 
 export default function Visualizer({ structures }: Props) {

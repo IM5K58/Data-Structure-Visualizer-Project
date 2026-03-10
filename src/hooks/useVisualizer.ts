@@ -10,6 +10,7 @@ import type {
     LinkedListState,
     TreeState,
     TreeNode,
+    MemoryState,
 } from '../types';
 import { nextId, resetParserIds, parseCodeWithContext } from '../utils/parser';
 
@@ -46,6 +47,9 @@ function findOrCreateStructure(
             break;
         case 'tree':
             newStructure = { type: 'tree', name: targetName, root: null };
+            break;
+        case 'memory':
+            newStructure = { type: 'memory', name: targetName, nodes: [] };
             break;
     }
     return [...structures, newStructure];
@@ -192,6 +196,47 @@ function executeCommand(
                 return {
                     ...tree,
                     root: removeNode(tree.root ? JSON.parse(JSON.stringify(tree.root)) : null, value)
+                };
+            }
+            case 'ALLOCATE_NODE': {
+                const mem = s as MemoryState;
+                return {
+                    ...mem,
+                    nodes: [...mem.nodes, {
+                        id: command.nodeId!,
+                        type: command.structType || 'Node',
+                        fields: {},
+                        pointers: {}
+                    }]
+                };
+            }
+            case 'SET_FIELD': {
+                const mem = s as MemoryState;
+                return {
+                    ...mem,
+                    nodes: mem.nodes.map(n =>
+                        n.id === command.nodeId
+                            ? { ...n, fields: { ...n.fields, [command.property!]: command.value as number | string | boolean } }
+                            : n
+                    )
+                };
+            }
+            case 'SET_POINTER': {
+                const mem = s as MemoryState;
+                return {
+                    ...mem,
+                    nodes: mem.nodes.map(n =>
+                        n.id === command.nodeId
+                            ? { ...n, pointers: { ...n.pointers, [command.property!]: command.pointerTo || null } }
+                            : n
+                    )
+                };
+            }
+            case 'DELETE_NODE': {
+                const mem = s as MemoryState;
+                return {
+                    ...mem,
+                    nodes: mem.nodes.filter(n => n.id !== command.nodeId)
                 };
             }
             default:

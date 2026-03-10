@@ -4,11 +4,37 @@ import type { Command, TargetType } from '../types';
  * 전처리: C++ 스타일 코드를 JS 실행 가능 코드로 변환
  */
 function preprocess(code: string): string {
-    const lines = code.split('\n');
+    let cleanedCode = code;
+
+    // 0. Handle typedef (e.g., typedef string Elem; -> replace Elem with string)
+    // Two-pass: first collect all aliases, then remove typedef lines, then apply replacements
+    const typedefRegex = /typedef\s+([a-zA-Z_]\w*(?:\s*\*+)?)\s+([a-zA-Z_]\w*)\s*;/g;
+    const typedefs: { original: string; alias: string }[] = [];
+    let match;
+    while ((match = typedefRegex.exec(cleanedCode)) !== null) {
+        typedefs.push({ original: match[1], alias: match[2] });
+    }
+    // Remove all typedef lines first
+    cleanedCode = cleanedCode.replace(/typedef\s+[a-zA-Z_]\w*(?:\s*\*+)?\s+[a-zA-Z_]\w*\s*;/g, '');
+    // Then apply alias replacements
+    for (const td of typedefs) {
+        cleanedCode = cleanedCode.replace(new RegExp(`\\b${td.alias}\\b`, 'g'), td.original);
+    }
+
+    // 1. Remove access modifiers and friends
+    cleanedCode = cleanedCode.replace(/\b(?:public|private|protected)\s*:/g, '');
+    cleanedCode = cleanedCode.replace(/\bfriend\s+class\s+\w+\s*;/g, '');
+
+    // 2. Flatten struct/class: Comment out wrappers so inner members become global context
+    cleanedCode = cleanedCode.replace(/^(?:struct|class)\s+\w+\s*\{/gm, '// class wrapper start');
+    cleanedCode = cleanedCode.replace(/^\s*\};/gm, '// class wrapper end');
+
+    const lines = cleanedCode.split('\n');
     const types = ['int', 'double', 'string', 'bool', 'float', 'char', 'auto', 'long', 'unsigned', 'short', 'void'];
     const typeRegexStr = `\\b(${types.join('|')})\\b`;
 
     let hasMain = false;
+    const classInstances: string[] = [];
 
     const processedLines = lines.map((line) => {
         let pline = line.trim();
@@ -35,16 +61,34 @@ function preprocess(code: string): string {
             return `const ${name} = __createList("${name}");`;
         });
 
-        // 6. 함수 정의 변환 (void func(int a) -> function func(a))
-        // 인자 부분의 타입을 제거하는 로직 포함
-        const funcRegex = new RegExp(`^${typeRegexStr}\\s+(\\w+)\\s*\\(([^)]*)\\)\\s*\\{?`, 'g');
+        // 6. Function prototype declarations (ending with ;) -> remove
+        if (/^\w[\w\s*&]*\w+\s*\([^)]*\)\s*(?:const\s*)?;/.test(pline)) {
+            return '';
+        }
+
+        // 6a. Destructor -> convert to empty function
+        if (pline.match(/^~\w+\s*\([^)]*\)\s*\{?/)) {
+            pline = pline.replace(/^~(\w+)\s*\([^)]*\)\s*\{?/, 'function __destructor_$1() {');
+        }
+
+        // 6b. Constructor: ClassName(...) { -> function ClassName() {
+        pline = pline.replace(/^(\w+)\s*\(([^)]*)\)\s*\{/, (_match, name, args) => {
+            const cleanArgs = args.split(',').map((arg: string) => {
+                const parts = arg.trim().split(/\s+/);
+                return parts[parts.length - 1].replace('&', '');
+            }).filter(Boolean).join(', ');
+            return `function ${name}(${cleanArgs}) {`;
+        });
+
+        // 6c. Function definition with return type and optional Class:: prefix
+        const funcRegex = new RegExp(`^${typeRegexStr}\\s+(?:\\w+::)?(\\w+)\\s*\\(([^)]*)\\)\\s*(?:const\\s*)?\\{?`, 'g');
         pline = pline.replace(funcRegex, (_match, _type, name, args) => {
             if (name === 'main') hasMain = true;
 
             // 인자에서 타입 및 참조자(&) 제거
             const cleanArgs = args.split(',').map((arg: string) => {
                 const parts = arg.trim().split(/\s+/);
-                return parts[parts.length - 1].replace('&', ''); // 마지막 단어(변수명)만 추출하고 & 제거
+                return parts[parts.length - 1].replace('&', '');
             }).filter(Boolean).join(', ');
 
             return `function ${name}(${cleanArgs}) {`;
@@ -66,7 +110,21 @@ function preprocess(code: string): string {
 
         // 9. 기타 C++ 키워드 변환
         pline = pline.replace(/\bnullptr\b/g, 'null');
+        pline = pline.replace(/\bNULL\b/g, 'null');
         pline = pline.replace(/\bendl\b/g, '"\\n"');
+
+        // 10. Custom Struct/Pointer 변환
+        pline = pline.replace(/\bnew\s+([a-zA-Z_]\w*)\s*(?:\([^)]*\))?/g, '__allocateNode("$1")');
+        pline = pline.replace(/\bdelete\s+([a-zA-Z_]\w*)\s*;/g, '__deleteNode($1);');
+        pline = pline.replace(/\b[A-Z]\w*(?:\s*\*+\s*|\s+)([a-zA-Z_]\w*)\s*=/g, 'let $1 =');
+        // Pointer declaration: Node* ptr; → let ptr = null;
+        pline = pline.replace(/\b([A-Z]\w*)\s*\*+\s*([a-zA-Z_]\w*)\s*;/g, 'let $2 = null;');
+        // Class instantiation: LinkedList list; → call constructor + track varName
+        pline = pline.replace(/\b([A-Z]\w*)\s+([a-zA-Z_]\w*)\s*;/g, (_, className, varName) => {
+            classInstances.push(varName);
+            return `${className}();`;
+        });
+        pline = pline.replace(/->/g, '.');
 
         return trace + pline;
     });
@@ -75,6 +133,11 @@ function preprocess(code: string): string {
     let finalCode = processedLines.join('\n');
     finalCode = finalCode.replace(/while\s*\((.*)\)/g, 'while (__checkLoop(), $1)');
     finalCode = finalCode.replace(/for\s*\(([^;]*);([^;]*);([^)]*)\)/g, 'for ($1; (__checkLoop(), $2); $3)');
+
+    // Strip method calls for class instance variables (e.g., list.addFront() → addFront())
+    for (const inst of classInstances) {
+        finalCode = finalCode.replace(new RegExp(`\\b${inst}\\.([a-zA-Z_]\\w*)\\s*\\(`, 'g'), '$1(');
+    }
 
     // 만약 main 함수가 정의되었다면 마지막에 호출 추가
     if (hasMain) {
@@ -102,6 +165,32 @@ export function parseCodeWithContext(code: string): Command[] {
 
     const helpers = {
         __setLine: (line: string) => { currentRawLine = line; },
+
+        __allocateNode: (structType: string) => {
+            const nodeId = nextId();
+            commands.push({ type: 'ALLOCATE_NODE', target: 'memory', targetName: 'memory', nodeId, structType, raw: currentRawLine });
+
+            const nodeObj: any = { __isMemoryNode: true, id: nodeId, type: structType };
+
+            return new Proxy(nodeObj, {
+                set(target, prop, value) {
+                    if (typeof prop === 'string') {
+                        if (value && value.__isMemoryNode) {
+                            commands.push({ type: 'SET_POINTER', target: 'memory', targetName: 'memory', nodeId, property: prop, pointerTo: value.id, raw: currentRawLine });
+                        } else {
+                            commands.push({ type: 'SET_FIELD', target: 'memory', targetName: 'memory', nodeId, property: prop, value, raw: currentRawLine });
+                        }
+                    }
+                    return Reflect.set(target, prop, value);
+                }
+            });
+        },
+
+        __deleteNode: (node: any) => {
+            if (node && node.__isMemoryNode) {
+                commands.push({ type: 'DELETE_NODE', target: 'memory', targetName: 'memory', nodeId: node.id, raw: currentRawLine });
+            }
+        },
 
         __createStack: (name: string) => {
             const _items: ValueType[] = [];
@@ -214,6 +303,7 @@ export function parseCodeWithContext(code: string): Command[] {
 
     try {
         const jsCode = preprocess(code);
+        console.log('=== Generated JS ===\n', jsCode);
         // eslint-disable-next-line @typescript-eslint/no-implied-eval
         const executor = new Function(...Object.keys(helpers), jsCode);
         executor(...Object.values(helpers));

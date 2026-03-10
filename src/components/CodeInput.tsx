@@ -30,7 +30,22 @@ ll.push_back(10);
 ll.push_back(20);
 ll.push_back(30);
 ll.push_back(40);
-ll.pop_back();`;
+ll.pop_back();
+
+// Custom Struct / Pointer Example
+struct Node {
+    int data;
+    Node* next;
+};
+
+Node* head = new Node();
+head->data = 10;
+head->next = new Node();
+head->next->data = 20;
+
+Node* ptr = head->next;
+ptr->next = new Node();
+ptr->next->data = 30;`;
 
 const SUGGESTIONS = [
     'stack', 'queue', 'list', 'vector', 'int', 'string', 'double', 'bool', 'void',
@@ -69,7 +84,7 @@ export default function CodeInput({ onCodeChange }: Props) {
         const currentLineNum = linesBefore.length;
         const lineHeight = 25.6; // 1.6rem (text-[13px] leading-[1.6rem] 기준)
         const paddingTop = 16;   // pt-4 (16px)
-        
+
         const cursorY = (currentLineNum - 1) * lineHeight + paddingTop;
         const visibleTop = textarea.scrollTop;
         const visibleBottom = visibleTop + textarea.clientHeight;
@@ -106,13 +121,13 @@ export default function CodeInput({ onCodeChange }: Props) {
                 const lines = textBeforeCursor.split('\n');
                 const lineNum = lines.length;
                 const charNum = lines[lines.length - 1].length;
-                
+
                 setSuggestionState({
                     visible: true,
                     list: filtered,
                     index: 0,
                     word: word,
-                    cursorPos: { 
+                    cursorPos: {
                         top: lineNum * 25.6 + 20 - textarea.scrollTop, // 스크롤 위치 반영
                         left: charNum * 8 + 50
                     }
@@ -189,7 +204,7 @@ export default function CodeInput({ onCodeChange }: Props) {
             const char = e.key;
             const pair = pairs[char];
             const newValue = value.substring(0, selectionStart) + char + pair + value.substring(selectionEnd);
-            
+
             setCode(newValue);
             onCodeChange(newValue);
 
@@ -204,7 +219,7 @@ export default function CodeInput({ onCodeChange }: Props) {
             e.preventDefault();
             const tabSpaces = '    ';
             const newValue = value.substring(0, selectionStart) + tabSpaces + value.substring(selectionEnd);
-            
+
             setCode(newValue);
             onCodeChange(newValue);
 
@@ -220,13 +235,13 @@ export default function CodeInput({ onCodeChange }: Props) {
             const linesBefore = beforeCursor.split('\n');
             const lastLine = linesBefore[linesBefore.length - 1] || '';
             const indentation = lastLine.match(/^\s*/)?.[0] || '';
-            
+
             if (beforeCursor.trim().endsWith('{') && afterCursor.trim().startsWith('}')) {
                 e.preventDefault();
                 const middleIndent = '\n' + indentation + '    ';
                 const endIndent = '\n' + indentation;
                 const newValue = beforeCursor + middleIndent + endIndent + afterCursor;
-                
+
                 setCode(newValue);
                 onCodeChange(newValue);
 
@@ -242,7 +257,7 @@ export default function CodeInput({ onCodeChange }: Props) {
 
             e.preventDefault();
             const newValue = value.substring(0, selectionStart) + autoIndent + value.substring(selectionEnd);
-            
+
             setCode(newValue);
             onCodeChange(newValue);
 
@@ -255,11 +270,11 @@ export default function CodeInput({ onCodeChange }: Props) {
         if (e.key === 'Backspace' && selectionStart === selectionEnd) {
             const beforeCursor = value.substring(0, selectionStart);
             const lastLine = beforeCursor.split('\n').pop() || '';
-            
+
             if (lastLine.length > 0 && lastLine.trim() === '' && lastLine.length % 4 === 0) {
                 e.preventDefault();
                 const newValue = value.substring(0, selectionStart - 4) + value.substring(selectionEnd);
-                
+
                 setCode(newValue);
                 onCodeChange(newValue);
 
@@ -283,7 +298,7 @@ export default function CodeInput({ onCodeChange }: Props) {
             </div>
 
             <div className="relative flex-1 rounded-xl overflow-hidden border border-border bg-bg-primary/50">
-                <div 
+                <div
                     ref={gutterRef}
                     className="absolute inset-y-0 left-0 w-10 bg-white/[0.02] border-r border-border flex flex-col pt-4 overflow-hidden pointer-events-none"
                 >
@@ -316,10 +331,10 @@ export default function CodeInput({ onCodeChange }: Props) {
                 />
 
                 {suggestionState.visible && (
-                    <div 
+                    <div
                         className="absolute z-50 bg-bg-secondary border border-border rounded-lg shadow-2xl py-1 min-w-[120px]"
-                        style={{ 
-                            top: suggestionState.cursorPos.top, 
+                        style={{
+                            top: suggestionState.cursorPos.top,
                             left: Math.min(suggestionState.cursorPos.left, 250)
                         }}
                     >

@@ -10,17 +10,25 @@ export type CommandType =
     | 'LIST_REMOVE'
     | 'TREE_INSERT'
     | 'TREE_DELETE'
+    | 'ALLOCATE_NODE'
+    | 'SET_FIELD'
+    | 'SET_POINTER'
+    | 'DELETE_NODE'
     | 'UNKNOWN';
 
-export type TargetType = 'stack' | 'queue' | 'array' | 'linkedlist' | 'tree';
+export type TargetType = 'stack' | 'queue' | 'array' | 'linkedlist' | 'tree' | 'memory';
 
 export interface Command {
     type: CommandType;
     target: TargetType;
     targetName: string;
-    value?: number | string | boolean;
+    value?: number | string | boolean | null;
     index?: number;
     size?: number;
+    nodeId?: string;
+    property?: string;
+    pointerTo?: string | null;
+    structType?: string;
     raw: string;
 }
 
@@ -67,12 +75,27 @@ export interface TreeState {
     root: TreeNode | null;
 }
 
+export interface MemoryNode {
+    id: string;
+    type: string; // e.g., "Node"
+    fields: Record<string, number | string | boolean>;
+    pointers: Record<string, string | null>;
+    label?: string; // e.g., variable name pointing to it
+}
+
+export interface MemoryState {
+    type: 'memory';
+    name: string;
+    nodes: MemoryNode[];
+}
+
 export type DataStructureState =
     | StackState
     | QueueState
     | ArrayState
     | LinkedListState
-    | TreeState;
+    | TreeState
+    | MemoryState;
 
 // ===== Visualizer State =====
 export interface VisualizerState {
