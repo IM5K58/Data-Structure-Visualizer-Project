@@ -249,7 +249,7 @@ Open `http://localhost:5173` in your browser.
 
 1. Connect GitHub repo to [Render](https://render.com)
 2. Set root directory to `server`, runtime to Docker
-3. Set env vars: `PORT=3001`, `GPP_PATH=/usr/bin/g++`, `FRONTEND_URL=https://your-app.vercel.app`
+3. Set env vars: `GPP_PATH=/usr/bin/g++`, `FRONTEND_URL=https://your-app.vercel.app`
 4. Deploy
 
 ---

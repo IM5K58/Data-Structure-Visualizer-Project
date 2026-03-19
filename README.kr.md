@@ -248,7 +248,7 @@ npm run dev
 
 1. GitHub 레포를 [Render](https://render.com)에 연결
 2. Root directory를 `server`, Runtime을 Docker로 설정
-3. 환경변수 설정: `PORT=3001`, `GPP_PATH=/usr/bin/g++`, `FRONTEND_URL=https://your-app.vercel.app`
+3. 환경변수 설정: `GPP_PATH=/usr/bin/g++`, `FRONTEND_URL=https://your-app.vercel.app`
 4. 배포
 
 ---
