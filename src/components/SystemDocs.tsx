@@ -32,9 +32,9 @@ const SystemDocs: React.FC<SystemDocsProps> = ({ onBack, lang = 'en' }) => {
                 utility: "Utility"
             },
             features: [
-                { title: "Case-Insensitivity", text: "Declarations (Stack, stack, STACK) are all recognized automatically." },
-                { title: "Infinite Loop Protection", text: "Loops are limited to 5,000 iterations to prevent browser freezing." },
-                { title: "Pre-processing", text: "#include and using namespace are accepted but ignored for execution." }
+                { title: "Real C++ Execution", text: "Your code is compiled and executed in a real C++ environment via Piston API." },
+                { title: "Memory Tracking", text: "The engine tracks actual memory addresses (pointers) and struct/class fields in real-time." },
+                { title: "Standard Libraries", text: "Full support for <iostream>, <stack>, <queue>, <vector>, <string>, etc." }
             ]
         },
         ko: {
@@ -61,9 +61,9 @@ const SystemDocs: React.FC<SystemDocsProps> = ({ onBack, lang = 'en' }) => {
                 utility: "기타 (Utility)"
             },
             features: [
-                { title: "대소문자 구분 없음", text: "자료구조 선언 시 대소문자를 구분하지 않고 자동으로 인식합니다. (Stack, stack, STACK 모두 가능)" },
-                { title: "무한 루프 방지", text: "브라우저 정지를 방지하기 위해 모든 반복문은 최대 5,000회 실행으로 제한됩니다." },
-                { title: "전처리 구문 허용", text: "#include 또는 using namespace와 같은 전처리 구문은 작성이 가능하지만, 엔진 실행 시에는 무시됩니다." }
+                { title: "실제 C++ 가상 실행", text: "작성한 코드는 Piston API를 통해 실제 C++ 환경에서 컴파일되고 실행됩니다." },
+                { title: "정밀 메모리 추적", text: "실제 메모리 주소(Pointer)와 구조체/클래스의 필드 변화를 실시간으로 추적합니다." },
+                { title: "표준 라이브러리 지원", text: "<iostream>, <stack>, <queue>, <vector>, <string> 등 표준 STL을 완벽히 지원합니다." }
             ]
         }
     }[lang];
@@ -84,13 +84,13 @@ const SystemDocs: React.FC<SystemDocsProps> = ({ onBack, lang = 'en' }) => {
                 },
                 {
                     name: t.structureNames.list,
-                    declaration: "linkedlist<int> l; / vector<int> v;",
-                    methods: ["push_back(val)", "push_front(val)", "insert(val)", "pop_back()", "pop_front()", "remove(val)", "size()", "empty()"]
+                    declaration: "vector<int> v;",
+                    methods: ["push_back(val)", "pop_back()", "size()", "at(idx)"]
                 },
                 {
-                    name: t.structureNames.tree,
-                    declaration: "tree<int> t; / bst<int> t;",
-                    methods: ["insert(val)", "remove(val)"]
+                    name: "Custom Node / Memory",
+                    declaration: "struct Node { int data; Node* next; };",
+                    methods: ["new Node()", "n->next = target", "delete node"]
                 },
                 {
                     name: t.structureNames.array,

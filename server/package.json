@@ -1,0 +1,22 @@
+{
+    "name": "vierasion-compiler-server",
+    "version": "1.0.0",
+    "description": "Backend compiler server for Vierasion Data Structure Visualizer",
+    "type": "module",
+    "scripts": {
+        "dev": "tsx watch src/index.ts",
+        "build": "tsc",
+        "start": "node dist/index.js"
+    },
+    "dependencies": {
+        "cors": "^2.8.5",
+        "express": "^5.1.0"
+    },
+    "devDependencies": {
+        "@types/cors": "^2.8.19",
+        "@types/express": "^5.0.3",
+        "@types/node": "^24.10.1",
+        "tsx": "^4.19.0",
+        "typescript": "~5.9.3"
+    }
+}

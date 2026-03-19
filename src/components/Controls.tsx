@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import type { Command } from '../types';
 
 interface Props {
     onRun: () => void;
@@ -11,7 +10,8 @@ interface Props {
     isRunning: boolean;
     currentStep: number;
     totalSteps: number;
-    commands: Command[];
+    isLoading: boolean;
+    error: string | null;
 }
 
 const SPEED_OPTIONS = [
@@ -32,7 +32,8 @@ export default function Controls({
     isRunning,
     currentStep,
     totalSteps,
-    commands,
+    isLoading,
+    error,
 }: Props) {
     const [speedIndex, setSpeedIndex] = useState(2); // default 1x
     const isFinished = currentStep >= totalSteps - 1 && totalSteps > 0;
@@ -44,6 +45,15 @@ export default function Controls({
 
     return (
         <div className="flex flex-col gap-4">
+            {/* Error Message */}
+            {error && (
+                <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-xs font-mono max-h-32 overflow-y-auto whitespace-pre-wrap">
+                    <span className="font-bold">Error:</span>
+                    <br />
+                    {error}
+                </div>
+            )}
+
             {/* Buttons */}
             <div className="flex items-center gap-3">
                 <button
@@ -51,24 +61,26 @@ export default function Controls({
                     disabled={isFinished && !isRunning}
                     className={`
             flex-1 h-12 rounded-xl font-semibold text-base transition-all duration-200
-            ${isRunning
-                            ? 'bg-accent-orange/20 text-accent-orange border border-accent-orange/30 hover:bg-accent-orange/30'
-                            : isFinished
-                                ? 'bg-white/5 text-text-muted border border-border cursor-not-allowed'
-                                : 'bg-accent-cyan/20 text-accent-cyan border border-accent-cyan/30 hover:bg-accent-cyan/30 hover:shadow-[0_0_20px_rgba(0,229,255,0.15)]'
+            ${isLoading
+                            ? 'bg-accent-cyan/10 text-accent-cyan/50 border border-accent-cyan/20 cursor-wait'
+                            : isRunning
+                                ? 'bg-accent-orange/20 text-accent-orange border border-accent-orange/30 hover:bg-accent-orange/30'
+                                : isFinished
+                                    ? 'bg-white/5 text-text-muted border border-border cursor-not-allowed'
+                                    : 'bg-accent-cyan/20 text-accent-cyan border border-accent-cyan/30 hover:bg-accent-cyan/30 hover:shadow-[0_0_20px_rgba(0,229,255,0.15)]'
                         }
           `}
                 >
-                    {isRunning ? '⏸ Pause' : isFinished ? '✓ Done' : '▶ Run'}
+                    {isLoading ? '⏳ Compiling...' : isRunning ? '⏸ Pause' : isFinished ? '✓ Done' : '▶ Run'}
                 </button>
 
                 <button
                     onClick={onStepBack}
-                    disabled={isRunning || currentStep <= -1}
+                    disabled={isRunning || currentStep <= -1 || isLoading}
                     className={`
             flex-1 h-12 rounded-xl font-semibold text-base transition-all duration-200
             border border-border
-            ${isRunning || currentStep <= -1
+            ${isRunning || currentStep <= -1 || isLoading
                             ? 'bg-white/5 text-text-muted cursor-not-allowed'
                             : 'bg-accent-purple/10 text-accent-purple border-accent-purple/30 hover:bg-accent-purple/20'
                         }
@@ -79,11 +91,11 @@ export default function Controls({
 
                 <button
                     onClick={onStep}
-                    disabled={isRunning || isFinished}
+                    disabled={isRunning || isFinished || isLoading}
                     className={`
             flex-1 h-12 rounded-xl font-semibold text-base transition-all duration-200
             border border-border
-            ${isRunning || isFinished
+            ${isRunning || isFinished || isLoading
                             ? 'bg-white/5 text-text-muted cursor-not-allowed'
                             : 'bg-accent-purple/10 text-accent-purple border-accent-purple/30 hover:bg-accent-purple/20'
                         }
@@ -119,52 +131,26 @@ export default function Controls({
             </div>
 
             {/* Speed controls */}
-            <div className="flex flex-col gap-1.5">
-                <span className="text-[10px] font-mono text-text-muted">Speed</span>
-                <div className="flex gap-1">
+            <div className="flex flex-col gap-1.5 px-1 pb-4">
+                <span className="text-[10px] font-mono text-text-muted uppercase tracking-widest">Playback Speed</span>
+                <div className="flex gap-1.5">
                     {SPEED_OPTIONS.map((opt, idx) => (
                         <button
                             key={opt.label}
                             onClick={() => handleSpeedChange(idx)}
                             className={`
-                flex-1 h-9 rounded-lg text-xs font-mono transition-all duration-150
-                ${idx === speedIndex
-                                    ? 'bg-accent-cyan/20 text-accent-cyan border border-accent-cyan/30'
-                                    : 'bg-white/5 text-text-muted border border-transparent hover:bg-white/10 hover:text-text-secondary'
+                                flex-1 h-10 rounded-lg text-xs font-bold transition-all duration-200
+                                ${idx === speedIndex
+                                    ? 'bg-accent-cyan/20 text-accent-cyan border border-accent-cyan/30 shadow-[0_0_15px_rgba(0,229,255,0.1)]'
+                                    : 'bg-white/5 text-text-muted border border-white/5 hover:bg-white/10 hover:text-text-secondary'
                                 }
-              `}
+                            `}
                         >
                             {opt.label}
                         </button>
                     ))}
                 </div>
             </div>
-
-            {/* Command log */}
-            {commands.length > 0 && (
-                <div className="flex flex-col gap-1.5">
-                    <span className="text-[10px] font-mono text-text-muted">Command Log</span>
-                    <div className="max-h-[200px] overflow-y-auto rounded-lg bg-bg-primary/50 border border-border p-2 space-y-0.5">
-                        {commands.map((cmd, idx) => (
-                            <div
-                                key={idx}
-                                className={`
-                  text-[11px] font-mono px-2 py-1 rounded
-                  ${idx === currentStep
-                                        ? 'bg-accent-cyan/10 text-accent-cyan'
-                                        : idx < currentStep + 1
-                                            ? 'text-text-secondary'
-                                            : 'text-text-muted/40'
-                                    }
-                `}
-                            >
-                                <span className="text-text-muted/30 mr-2">{idx + 1}.</span>
-                                {cmd.raw}
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            )}
         </div>
     );
 }

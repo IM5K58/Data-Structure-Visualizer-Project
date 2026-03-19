@@ -4,19 +4,15 @@ export type CommandType =
     | 'POP'
     | 'ENQUEUE'
     | 'DEQUEUE'
-    | 'ARRAY_DECLARE'
-    | 'ARRAY_SET'
-    | 'LIST_INSERT'
-    | 'LIST_REMOVE'
-    | 'TREE_INSERT'
-    | 'TREE_DELETE'
     | 'ALLOCATE_NODE'
     | 'SET_FIELD'
     | 'SET_POINTER'
     | 'DELETE_NODE'
+    | 'SET_LABEL'
+    | 'ERROR'
     | 'UNKNOWN';
 
-export type TargetType = 'stack' | 'queue' | 'array' | 'linkedlist' | 'tree' | 'memory';
+export type TargetType = 'stack' | 'queue' | 'memory' | 'tree';
 
 export interface Command {
     type: CommandType;
@@ -29,7 +25,9 @@ export interface Command {
     property?: string;
     pointerTo?: string | null;
     structType?: string;
+    label?: string;
     raw: string;
+    output?: string;
 }
 
 // ===== Data Structure States =====
@@ -45,42 +43,13 @@ export interface QueueState {
     items: { id: string; value: number | string | boolean }[];
 }
 
-export interface ArrayState {
-    type: 'array';
-    name: string;
-    items: { id: string; value: number | string | boolean | null; index: number }[];
-}
-
-export interface LinkedListNode {
-    id: string;
-    value: number | string | boolean;
-}
-
-export interface LinkedListState {
-    type: 'linkedlist';
-    name: string;
-    nodes: LinkedListNode[];
-}
-
-export interface TreeNode {
-    id: string;
-    value: number;
-    left: TreeNode | null;
-    right: TreeNode | null;
-}
-
-export interface TreeState {
-    type: 'tree';
-    name: string;
-    root: TreeNode | null;
-}
 
 export interface MemoryNode {
     id: string;
     type: string; // e.g., "Node"
     fields: Record<string, number | string | boolean>;
     pointers: Record<string, string | null>;
-    label?: string; // e.g., variable name pointing to it
+    labels: string[]; // e.g., variable names pointing to it
 }
 
 export interface MemoryState {
@@ -89,13 +58,18 @@ export interface MemoryState {
     nodes: MemoryNode[];
 }
 
+export interface TreeState {
+    type: 'tree';
+    name: string;
+    nodes: MemoryNode[];
+    rootId: string | null;
+}
+
 export type DataStructureState =
     | StackState
     | QueueState
-    | ArrayState
-    | LinkedListState
-    | TreeState
-    | MemoryState;
+    | MemoryState
+    | TreeState;
 
 // ===== Visualizer State =====
 export interface VisualizerState {
@@ -103,6 +77,11 @@ export interface VisualizerState {
     commandHistory: Command[];
     currentStep: number;
     isRunning: boolean;
+    isLoading: boolean;
+    error: string | null;
+    stdout: string; // Total output from backend
+    terminalOutput: string; // Synchronized output shown in terminal
+    stdin: string; 
 }
 
 export type VisualizerAction =
@@ -111,4 +90,8 @@ export type VisualizerAction =
     | { type: 'STEP_BACK' }
     | { type: 'RESET' }
     | { type: 'SET_RUNNING'; isRunning: boolean }
+    | { type: 'SET_LOADING'; isLoading: boolean }
+    | { type: 'SET_ERROR'; error: string | null }
+    | { type: 'SET_STDOUT'; stdout: string }
+    | { type: 'SET_STDIN'; stdin: string }
     | { type: 'LOAD_COMMANDS'; commands: Command[] };

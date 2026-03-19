@@ -6,19 +6,22 @@ import type {
     DataStructureState,
     StackState,
     QueueState,
-    ArrayState,
-    LinkedListState,
-    TreeState,
-    TreeNode,
     MemoryState,
+    TreeState,
 } from '../types';
-import { nextId, resetParserIds, parseCodeWithContext } from '../utils/parser';
-
+import { nextId, resetParserIds } from '../utils/ids';
+import { compileCode } from '../api/compilerApi';
+import { mapTraceToCommands } from '../engine/stepMapper';
 const initialState: VisualizerState = {
     structures: [],
     commandHistory: [],
     currentStep: -1,
     isRunning: false,
+    isLoading: false,
+    error: null,
+    stdout: '',
+    terminalOutput: '',
+    stdin: '',
 };
 
 function findOrCreateStructure(
@@ -39,17 +42,11 @@ function findOrCreateStructure(
         case 'queue':
             newStructure = { type: 'queue', name: targetName, items: [] };
             break;
-        case 'array':
-            newStructure = { type: 'array', name: targetName, items: [] };
-            break;
-        case 'linkedlist':
-            newStructure = { type: 'linkedlist', name: targetName, nodes: [] };
-            break;
-        case 'tree':
-            newStructure = { type: 'tree', name: targetName, root: null };
-            break;
         case 'memory':
             newStructure = { type: 'memory', name: targetName, nodes: [] };
+            break;
+        case 'tree':
+            newStructure = { type: 'tree', name: targetName, nodes: [], rootId: null };
             break;
     }
     return [...structures, newStructure];
@@ -95,110 +92,23 @@ function executeCommand(
                     items: queue.items.slice(1),
                 };
             }
-            case 'ARRAY_DECLARE': {
-                const arr = s as ArrayState;
-                const items = Array.from({ length: command.size! }, (_, i) => ({
-                    id: nextId(),
-                    value: null as number | null,
-                    index: i,
-                }));
-                return { ...arr, items };
-            }
-            case 'ARRAY_SET': {
-                const arr = s as ArrayState;
-                return {
-                    ...arr,
-                    items: arr.items.map((item) =>
-                        item.index === command.index
-                            ? { ...item, value: command.value! }
-                            : item
-                    ),
-                };
-            }
-            case 'LIST_INSERT': {
-                const list = s as LinkedListState;
-                return {
-                    ...list,
-                    nodes: [...list.nodes, { id: nextId(), value: command.value! }],
-                };
-            }
-            case 'LIST_REMOVE': {
-                const list = s as LinkedListState;
-                if (list.nodes.length === 0) return list;
-                if (command.value !== undefined) {
-                    const idx = list.nodes.findIndex((n) => n.value === command.value);
-                    if (idx === -1) return list;
+            case 'ALLOCATE_NODE': {
+                if (s.type === 'tree') {
+                    const tree = s as TreeState;
+                    const newNode = {
+                        id: command.nodeId!,
+                        type: command.structType || 'Node',
+                        fields: {},
+                        pointers: {},
+                        labels: command.label ? [command.label] : []
+                    };
                     return {
-                        ...list,
-                        nodes: list.nodes.filter((_, i) => i !== idx),
+                        ...tree,
+                        nodes: [...tree.nodes, newNode],
+                        rootId: tree.rootId ?? command.nodeId!,
                     };
                 }
-                // Default: remove last
-                return {
-                    ...list,
-                    nodes: list.nodes.slice(0, -1),
-                };
-            }
-            case 'TREE_INSERT': {
-                const tree = s as TreeState;
-                const value = Number(command.value);
-
-                const insertNode = (root: TreeNode | null): TreeNode => {
-                    if (!root) return { id: nextId(), value, left: null, right: null };
-                    if (value < root.value) root.left = insertNode(root.left);
-                    else root.right = insertNode(root.right);
-                    return root;
-                };
-
-                return {
-                    ...tree,
-                    root: insertNode(tree.root ? JSON.parse(JSON.stringify(tree.root)) : null)
-                };
-            }
-            case 'TREE_DELETE': {
-                const tree = s as TreeState;
-                const value = Number(command.value);
-
-                const findMin = (node: TreeNode): TreeNode => {
-                    while (node.left) node = node.left;
-                    return node;
-                };
-
-                const deleteNode = (root: TreeNode | null): TreeNode | null => {
-                    if (!root) return null;
-                    if (value < root.value) root.left = deleteNode(root.left);
-                    else if (value > root.value) root.right = deleteNode(root.right);
-                    else {
-                        if (!root.left) return root.right;
-                        if (!root.right) return root.left;
-                        const temp = findMin(root.right);
-                        root.value = temp.value;
-                        root.right = deleteNode(root.right); // Note: this actually needs to delete the min value node
-                    }
-                    return root;
-                };
-
-                // Corrected delete logic for BST
-                const removeNode = (root: TreeNode | null, val: number): TreeNode | null => {
-                    if (!root) return null;
-                    if (val < root.value) root.left = removeNode(root.left, val);
-                    else if (val > root.value) root.right = removeNode(root.right, val);
-                    else {
-                        if (!root.left) return root.right;
-                        if (!root.right) return root.left;
-                        const temp = findMin(root.right);
-                        root.value = temp.value;
-                        root.right = removeNode(root.right, temp.value);
-                    }
-                    return root;
-                };
-
-                return {
-                    ...tree,
-                    root: removeNode(tree.root ? JSON.parse(JSON.stringify(tree.root)) : null, value)
-                };
-            }
-            case 'ALLOCATE_NODE': {
+                if (s.type !== 'memory') return s;
                 const mem = s as MemoryState;
                 return {
                     ...mem,
@@ -206,15 +116,34 @@ function executeCommand(
                         id: command.nodeId!,
                         type: command.structType || 'Node',
                         fields: {},
-                        pointers: {}
+                        pointers: {},
+                        labels: command.label ? [command.label] : []
                     }]
                 };
             }
-            case 'SET_FIELD': {
-                const mem = s as MemoryState;
+            case 'SET_LABEL': {
+                if (s.type !== 'memory' && s.type !== 'tree') return s;
+                const state = s as MemoryState | TreeState;
+                const label = command.label!;
+                const targetNodeId = command.nodeId;
+
                 return {
-                    ...mem,
-                    nodes: mem.nodes.map(n =>
+                    ...state,
+                    nodes: state.nodes.map(n => {
+                        const filteredLabels = n.labels.filter(l => l !== label);
+                        if (n.id === targetNodeId) {
+                            return { ...n, labels: [...filteredLabels, label] };
+                        }
+                        return { ...n, labels: filteredLabels };
+                    })
+                };
+            }
+            case 'SET_FIELD': {
+                if (s.type !== 'memory' && s.type !== 'tree') return s;
+                const state = s as MemoryState | TreeState;
+                return {
+                    ...state,
+                    nodes: state.nodes.map(n =>
                         n.id === command.nodeId
                             ? { ...n, fields: { ...n.fields, [command.property!]: command.value as number | string | boolean } }
                             : n
@@ -222,10 +151,11 @@ function executeCommand(
                 };
             }
             case 'SET_POINTER': {
-                const mem = s as MemoryState;
+                if (s.type !== 'memory' && s.type !== 'tree') return s;
+                const state = s as MemoryState | TreeState;
                 return {
-                    ...mem,
-                    nodes: mem.nodes.map(n =>
+                    ...state,
+                    nodes: state.nodes.map(n =>
                         n.id === command.nodeId
                             ? { ...n, pointers: { ...n.pointers, [command.property!]: command.pointerTo || null } }
                             : n
@@ -233,11 +163,18 @@ function executeCommand(
                 };
             }
             case 'DELETE_NODE': {
-                const mem = s as MemoryState;
-                return {
-                    ...mem,
-                    nodes: mem.nodes.filter(n => n.id !== command.nodeId)
-                };
+                if (s.type !== 'memory' && s.type !== 'tree') return s;
+                const state = s as MemoryState | TreeState;
+                const filtered = state.nodes.filter(n => n.id !== command.nodeId);
+                if (s.type === 'tree') {
+                    const tree = state as TreeState;
+                    return {
+                        ...tree,
+                        nodes: filtered,
+                        rootId: tree.rootId === command.nodeId ? (filtered.length > 0 ? filtered[0].id : null) : tree.rootId,
+                    };
+                }
+                return { ...state, nodes: filtered };
             }
             default:
                 return s;
@@ -273,19 +210,28 @@ function reducer(state: VisualizerState, action: VisualizerAction): VisualizerSt
                 ...state,
                 structures: executeCommand(state.structures, command),
                 currentStep: nextStep,
+                terminalOutput: state.terminalOutput + (command.output || ''),
             };
         }
         case 'STEP_BACK': {
             if (state.currentStep <= -1) return state;
             const prevStep = state.currentStep - 1;
+            
+            // Re-calculate terminal output up to prevStep
+            let newTerminalOutput = '';
+            for (let i = 0; i <= prevStep; i++) {
+                newTerminalOutput += (state.commandHistory[i].output || '');
+            }
+
             if (prevStep < 0) {
                 resetParserIds();
-                return { ...state, structures: [], currentStep: -1 };
+                return { ...state, structures: [], currentStep: -1, terminalOutput: '' };
             }
             return {
                 ...state,
                 structures: replayToStep(state.commandHistory, prevStep),
                 currentStep: prevStep,
+                terminalOutput: newTerminalOutput,
             };
         }
         case 'EXECUTE_COMMAND':
@@ -298,9 +244,18 @@ function reducer(state: VisualizerState, action: VisualizerAction): VisualizerSt
             return {
                 ...initialState,
                 commandHistory: state.commandHistory,
+                stdin: state.stdin, // Keep stdin
             };
         case 'SET_RUNNING':
             return { ...state, isRunning: action.isRunning };
+        case 'SET_LOADING':
+            return { ...state, isLoading: action.isLoading };
+        case 'SET_ERROR':
+            return { ...state, error: action.error };
+        case 'SET_STDOUT':
+            return { ...state, stdout: action.stdout };
+        case 'SET_STDIN':
+            return { ...state, stdin: action.stdin };
         default:
             return state;
     }
@@ -311,11 +266,52 @@ export function useVisualizer() {
     const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const speedRef = useRef(500);
 
-    const loadCode = useCallback((code: string) => {
-        stopAutoRun();
-        const commands = parseCodeWithContext(code);
-        dispatch({ type: 'LOAD_COMMANDS', commands });
+    const stopAutoRun = useCallback(() => {
+        if (intervalRef.current) {
+            clearInterval(intervalRef.current);
+            intervalRef.current = null;
+        }
+        dispatch({ type: 'SET_RUNNING', isRunning: false });
     }, []);
+
+    const stdinRef = useRef(state.stdin);
+    stdinRef.current = state.stdin;
+
+    const loadCode = useCallback(async (code: string) => {
+        stopAutoRun();
+        dispatch({ type: 'SET_LOADING', isLoading: true });
+        dispatch({ type: 'SET_ERROR', error: null });
+        dispatch({ type: 'SET_STDOUT', stdout: '' });
+
+        try {
+            const response = await compileCode(code, stdinRef.current);
+            if (!response.success && response.error) {
+                dispatch({ type: 'SET_ERROR', error: response.error.message });
+
+                // Create virtual error commands to show in the Command Log as requested
+                const errorCommands: Command[] = response.error.message.split('\n').filter(line => line.trim()).map(line => ({
+                    type: 'ERROR',
+                    target: 'memory',
+                    targetName: 'error',
+                    raw: line.trim()
+                }));
+
+                dispatch({ type: 'LOAD_COMMANDS', commands: errorCommands });
+                return false;
+            }
+
+            const commands = mapTraceToCommands(response.steps);
+            dispatch({ type: 'SET_STDOUT', stdout: response.stdout });
+            dispatch({ type: 'LOAD_COMMANDS', commands });
+            return true;
+        } catch (err: any) {
+            dispatch({ type: 'SET_ERROR', error: err.message || 'Failed to compile/execute code.' });
+            dispatch({ type: 'LOAD_COMMANDS', commands: [] });
+            return false;
+        } finally {
+            dispatch({ type: 'SET_LOADING', isLoading: false });
+        }
+    }, [stopAutoRun]);
 
     const step = useCallback(() => {
         dispatch({ type: 'STEP' });
@@ -325,13 +321,6 @@ export function useVisualizer() {
         dispatch({ type: 'STEP_BACK' });
     }, []);
 
-    const stopAutoRun = useCallback(() => {
-        if (intervalRef.current) {
-            clearInterval(intervalRef.current);
-            intervalRef.current = null;
-        }
-        dispatch({ type: 'SET_RUNNING', isRunning: false });
-    }, []);
 
     const run = useCallback(() => {
         stopAutoRun();
@@ -357,6 +346,10 @@ export function useVisualizer() {
         }
     }, [state.isRunning, stopAutoRun]);
 
+    const setStdin = useCallback((stdin: string) => {
+        dispatch({ type: 'SET_STDIN', stdin });
+    }, []);
+
     return {
         state,
         loadCode,
@@ -366,5 +359,6 @@ export function useVisualizer() {
         reset,
         stopAutoRun,
         setSpeed,
+        setStdin,
     };
 }

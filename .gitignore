@@ -12,9 +12,8 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # Dependency directories
 node_modules/
-jspm_packages/
 
-# TypeScript v5 build info
+# TypeScript build info
 *.tsbuildinfo
 
 # Optional npm cache directory
@@ -26,10 +25,7 @@ jspm_packages/
 # Output of 'npm pack'
 *.tgz
 
-# Yarn Integrity file
-.yarn-integrity
-
-# dotenv environment variables files
+# dotenv environment variables files (secrets)
 .env
 .env.test
 .env.production
@@ -38,10 +34,11 @@ jspm_packages/
 .env.test.local
 .env.production.local
 
-# Production build
+# Production build output
 dist/
 dist-ssr/
 out/
+server/dist/
 
 # IDE/Editor directories and files
 .vscode/*
@@ -53,9 +50,26 @@ out/
 *.njsproj
 *.sln
 *.sw?
+*.swp
+*~
 
-# Temporary files created during development
+# OS files
+Thumbs.db
+Desktop.ini
+
+# Compiled C++ artifacts (sandbox temp files)
+server/sandbox/*.exe
+server/sandbox/*.o
+server/sandbox/*.out
+
+# Temporary files
 build_errors.txt
 tmp/
 temp/
 TEST_CASES.md
+*.tmp
+
+# Debug/test artifacts
+server/debug_cases.txt
+server/sandbox/*.cpp
+server/__tracer.h
