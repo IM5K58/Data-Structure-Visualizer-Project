@@ -72,7 +72,7 @@ export default function QueueBlock({ data }: Props) {
                     </div>
 
                     {/* Items area */}
-                    <div className="flex items-center gap-2 px-3 py-4 min-h-[68px] overflow-x-auto scrollbar-hide relative z-10">
+                    <div className="flex items-end gap-2 px-3 py-3 min-h-[68px] overflow-x-auto scrollbar-hide relative z-10">
                         <AnimatePresence mode="popLayout">
                             {data.items.map((item, index) => {
                                 const isFront = index === 0;
@@ -92,44 +92,47 @@ export default function QueueBlock({ data }: Props) {
                                             scale: { type: 'spring', stiffness: 300, damping: 20 },
                                             x: { type: 'spring', stiffness: 200, damping: 22 },
                                         }}
-                                        className="relative shrink-0"
+                                        className="shrink-0 flex flex-col items-center"
                                     >
-                                        {/* Front/Back badge */}
-                                        {(isFront || isBack) && data.items.length > 1 && (
-                                            <motion.div
-                                                initial={{ opacity: 0, y: 4 }}
-                                                animate={{ opacity: 1, y: 0 }}
-                                                className={`absolute -top-5 left-1/2 -translate-x-1/2 text-[8px] font-bold font-mono tracking-wider whitespace-nowrap
-                                                    ${isFront ? 'text-accent-cyan' : 'text-accent-cyan/50'}`}
-                                            >
-                                                {isFront ? 'FRONT' : 'BACK'}
-                                            </motion.div>
-                                        )}
-
-                                        {/* Glow effect for front element */}
-                                        {isFront && (
-                                            <motion.div
-                                                animate={{ opacity: [0.15, 0.35, 0.15] }}
-                                                transition={{ duration: 2, repeat: Infinity }}
-                                                className="absolute inset-[-6px] bg-accent-cyan/20 blur-[12px] rounded-xl z-[-1]"
-                                            />
-                                        )}
+                                        {/* Front/Back badge — 일반 흐름 (absolute 아님) */}
+                                        <div className="h-4 flex items-center justify-center">
+                                            {(isFront || isBack) && data.items.length > 1 ? (
+                                                <motion.span
+                                                    initial={{ opacity: 0 }}
+                                                    animate={{ opacity: 1 }}
+                                                    className={`text-[8px] font-bold font-mono tracking-wider
+                                                        ${isFront ? 'text-accent-cyan' : 'text-accent-cyan/50'}`}
+                                                >
+                                                    {isFront ? 'FRONT' : 'BACK'}
+                                                </motion.span>
+                                            ) : null}
+                                        </div>
 
                                         {/* Block */}
-                                        <div
-                                            className={`
-                                                min-w-[48px] h-[48px] px-3 rounded-lg flex items-center justify-center
-                                                font-mono font-semibold text-sm
-                                                border transition-all duration-300
-                                                ${isFront
-                                                    ? 'bg-accent-cyan/20 border-accent-cyan/50 text-accent-cyan shadow-[0_0_20px_rgba(0,229,255,0.15)]'
-                                                    : isBack
-                                                        ? 'bg-accent-cyan/8 border-accent-cyan/30 text-white/90'
-                                                        : 'bg-accent-cyan/5 border-accent-cyan/15 text-white/70'
-                                                }
-                                            `}
-                                        >
-                                            <span className="truncate max-w-[80px]">{displayVal}</span>
+                                        <div className="relative">
+                                            {/* Glow effect for front element */}
+                                            {isFront && (
+                                                <motion.div
+                                                    animate={{ opacity: [0.15, 0.35, 0.15] }}
+                                                    transition={{ duration: 2, repeat: Infinity }}
+                                                    className="absolute inset-[-6px] bg-accent-cyan/20 blur-[12px] rounded-xl z-[-1]"
+                                                />
+                                            )}
+                                            <div
+                                                className={`
+                                                    min-w-[48px] h-[48px] px-3 rounded-lg flex items-center justify-center
+                                                    font-mono font-semibold text-sm
+                                                    border transition-all duration-300
+                                                    ${isFront
+                                                        ? 'bg-accent-cyan/20 border-accent-cyan/50 text-accent-cyan shadow-[0_0_20px_rgba(0,229,255,0.15)]'
+                                                        : isBack
+                                                            ? 'bg-accent-cyan/8 border-accent-cyan/30 text-white/90'
+                                                            : 'bg-accent-cyan/5 border-accent-cyan/15 text-white/70'
+                                                    }
+                                                `}
+                                            >
+                                                <span className="truncate max-w-[80px]">{displayVal}</span>
+                                            </div>
                                         </div>
 
                                         {/* Index label */}

@@ -140,7 +140,7 @@ export function mapTraceToCommands(steps: TraceStep[]): Command[] {
             case 'PUSH': {
                 let target = varToTarget.get(step.var || '');
                 if (!target) {
-                    target = step.var?.startsWith('q') ? 'queue' : 'stack';
+                    target = 'stack'; // ALLOC 힌트가 없으면 기본값 stack
                 }
                 const cmdType: CommandType = target === 'queue' ? 'ENQUEUE' : 'PUSH';
 
@@ -157,7 +157,7 @@ export function mapTraceToCommands(steps: TraceStep[]): Command[] {
             case 'POP': {
                 let target = varToTarget.get(step.var || '');
                 if (!target) {
-                    target = step.var?.startsWith('q') ? 'queue' : 'stack';
+                    target = 'stack'; // ALLOC 힌트가 없으면 기본값 stack
                 }
                 const cmdType: CommandType = target === 'queue' ? 'DEQUEUE' : 'POP';
 

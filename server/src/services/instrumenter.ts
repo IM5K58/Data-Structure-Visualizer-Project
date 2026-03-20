@@ -10,6 +10,17 @@ interface StructDef {
     hint?: 'stack' | 'queue' | 'node' | 'tree';
 }
 
+// STL 컨테이너 → 자료구조 힌트 매핑
+const STL_CONTAINER_HINTS: Record<string, 'stack' | 'queue'> = {
+    'queue': 'queue',
+    'stack': 'stack',
+    'priority_queue': 'stack',
+    'deque': 'queue',
+};
+
+const STL_PUSH_METHODS = ['push', 'push_back', 'push_front', 'enqueue'];
+const STL_POP_METHODS = ['pop', 'pop_back', 'pop_front', 'dequeue'];
+
 /**
  * C++ 코드를 분석하고 추적 코드를 삽입합니다.
  */
@@ -74,6 +85,7 @@ export function instrument(code: string): string {
                 if (constructorName === currentStruct.name) {
                     const initList = initListMatch[2];
                     const fieldInits = initList.split(',').map(s => s.trim());
+                    const traceLines: string[] = [];
                     fieldInits.forEach(init => {
                         const m = init.match(/^(\w+)\s*\(([^)]+)\)$/);
                         if (m) {
@@ -81,14 +93,25 @@ export function instrument(code: string): string {
                             const fieldDef = currentStruct?.fields.find(f => f.name === fieldName);
                             if (fieldDef) {
                                 if (fieldDef.isPointer) {
-                                    output.push(`    __vt::set_ptr(${lineNum}, "this", "${fieldName}", this, this->${fieldName});`);
+                                    traceLines.push(`    __vt::set_ptr(${lineNum}, "this", "${fieldName}", this, this->${fieldName});`);
                                 } else {
-                                    output.push(`    __vt::${getTraceSetFn(fieldDef.type)}(${lineNum}, "this", "${fieldName}", this, this->${fieldName});`);
+                                    traceLines.push(`    __vt::${getTraceSetFn(fieldDef.type)}(${lineNum}, "this", "${fieldName}", this, this->${fieldName});`);
                                 }
                             }
                         }
                     });
-                    // 초기화 리스트 라인은 스킵 로직에 걸려도 이미 처리가 끝났으므로 continue
+
+                    // 단일 라인 생성자: {} 가 같은 줄에 있으면 본문 안에 삽입
+                    if (trimmed.includes('{') && traceLines.length > 0) {
+                        output.pop(); // 원본 라인 제거
+                        const braceIdx = line.indexOf('{');
+                        output.push(line.substring(0, braceIdx + 1)); // "... {" 까지
+                        traceLines.forEach(t => output.push(t));
+                        output.push(line.substring(braceIdx + 1)); // "}" 이후
+                    } else {
+                        // 멀티 라인 생성자: 기존처럼 다음 줄에 추가
+                        traceLines.forEach(t => output.push(t));
+                    }
                     continue;
                 }
             }
@@ -109,27 +132,50 @@ export function instrument(code: string): string {
         // 4. 일반 패턴 매칭
 
         // 패턴 0: 메서드 호출 계측 (q.enqueue(100), s.push(42), q.dequeue())
-        // ^ 앵커 제거: if (cond) s.push(x); 같은 제어문 내부에서도 매칭
-        const methodCallMatch = trimmed.match(/(\w+)\.(\w+)\s*\((.*)\)\s*;/);
-        if (methodCallMatch) {
-            const varName = methodCallMatch[1];
-            const methodName = methodCallMatch[2];
-            const args = methodCallMatch[3].trim();
+        // matchAll로 라인 내 모든 메서드 호출을 스캔하여 탐욕적 매칭 방지
+        // 예: if (!q.isEmpty()) q.dequeue(); → isEmpty는 무시, dequeue만 계측
+        {
+            const methodCallRegex = /(\w+)\.(\w+)\s*\(([^)]*)\)/g;
+            const matches = [...trimmed.matchAll(methodCallRegex)];
+            let methodInstrumented = false;
 
-            const typeName = varTypes.get(varName);
-            if (typeName) {
+            for (const m of matches) {
+                const varName = m[1];
+                const methodName = m[2];
+                const args = m[3].trim();
+
+                const typeName = varTypes.get(varName);
+                if (!typeName) continue;
+
+                // 사용자 정의 struct 또는 STL 컨테이너에서 hint 조회
+                let hint: string | undefined;
                 const baseType = typeName.split('<')[0];
                 const struct = structs.find(s => s.name === baseType || s.name === typeName);
-                if (struct && (struct.hint === 'stack' || struct.hint === 'queue')) {
-                    const lowerMethod = methodName.toLowerCase();
-                    if (['push', 'enqueue'].includes(lowerMethod) && args) {
-                        output.push(`    __vt::push_val(${lineNum}, "${varName}", (${args}));`);
-                    } else if (['pop', 'dequeue'].includes(lowerMethod)) {
-                        output.push(`    __vt::pop(${lineNum}, "${varName}");`);
-                    }
-                    continue;
+                if (struct) {
+                    hint = struct.hint;
+                } else {
+                    const stlBase = typeName.replace('std::', '');
+                    hint = STL_CONTAINER_HINTS[stlBase];
+                }
+                if (hint !== 'stack' && hint !== 'queue') continue;
+
+                const lowerMethod = methodName.toLowerCase();
+                if (STL_PUSH_METHODS.includes(lowerMethod) && args) {
+                    output.push(`    __vt::push_val(${lineNum}, "${varName}", (${args}));`);
+                    methodInstrumented = true;
+                } else if (STL_POP_METHODS.includes(lowerMethod)) {
+                    output.push(`    __vt::pop(${lineNum}, "${varName}");`);
+                    methodInstrumented = true;
                 }
             }
+            if (methodInstrumented) continue;
+        }
+
+        // Stack/Queue 컨테이너 내부 메서드 본문에서는 패턴 1-5 계측 억제
+        // 외부 호출 시 push_val/pop만으로 충분하며, 내부 new/set_ptr/delete가
+        // memory 뷰에 누출되는 것을 방지
+        if (currentStruct && (currentStruct.hint === 'stack' || currentStruct.hint === 'queue')) {
+            continue;
         }
 
         // 패턴 1: new 할당 (const/static/volatile 접두사 허용)
@@ -248,6 +294,19 @@ export function instrument(code: string): string {
             continue;
         }
 
+        // STL 컨테이너 선언 감지: std::queue<int> q; 또는 queue<int> q;
+        const stlDeclMatch = trimmed.match(/^(?:std::)?(\w+)\s*<([^>]+)>\s+(\w+)\s*(?:\{[^}]*\}|\([^)]*\))?\s*;/);
+        if (stlDeclMatch) {
+            const containerName = stlDeclMatch[1];
+            const varName = stlDeclMatch[3];
+            const hint = STL_CONTAINER_HINTS[containerName];
+            if (hint) {
+                varTypes.set(varName, `std::${containerName}`);
+                output.push(`    __vt::alloc(${lineNum}, "${varName}", &${varName}, "std::${containerName}", "${hint}");`);
+                continue;
+            }
+        }
+
         const stackObjDecl = trimmed.match(/^(?:const\s+|static\s+|volatile\s+)*(\w+(?:<[^>]+>)?)\s+(\w+)\s*(?:\{[^}]*\}|\([^)]*\))?\s*;/);
         if (stackObjDecl) {
             const typeName = stackObjDecl[1];
@@ -351,10 +410,19 @@ export function parseStructs(code: string): StructDef[] {
         const selfPointers = fields.filter(f => f.isPointer && (f.type === name || f.type === `${name}*`));
         const selfPointerCount = selfPointers.length;
 
-        if (methodSet.has('push') && methodSet.has('pop')) {
-            hint = 'stack';
-        } else if ((methodSet.has('enqueue') && methodSet.has('dequeue')) || (methodSet.has('push') && methodSet.has('front'))) {
+        // 큐/스택 힌트 감지
+        const queueFieldNames = ['front', 'rear', 'head', 'tail', 'first', 'last'];
+        const hasQueueFields = fields.some(f => queueFieldNames.includes(f.name.toLowerCase()));
+
+        if ((methodSet.has('enqueue') && methodSet.has('dequeue')) ||
+            (methodSet.has('push_back') && (methodSet.has('pop_front') || methodSet.has('dequeue'))) ||
+            (methodSet.has('push') && methodSet.has('front') && !methodSet.has('pop'))) {
             hint = 'queue';
+        } else if (methodSet.has('push') && methodSet.has('pop') && hasQueueFields) {
+            // push+pop이지만 front/rear 필드가 있으면 FIFO → queue
+            hint = 'queue';
+        } else if (methodSet.has('push') && methodSet.has('pop')) {
+            hint = 'stack';
         } else if (selfPointerCount >= 2) {
             hint = 'tree';
         } else if (selfPointerCount === 1) {
