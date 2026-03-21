@@ -22,15 +22,82 @@ const STL_PUSH_METHODS = ['push', 'push_back', 'push_front', 'enqueue'];
 const STL_POP_METHODS = ['pop', 'pop_back', 'pop_front', 'dequeue'];
 
 /**
+ * main() 함수가 없으면 자동으로 추가합니다.
+ * 선언부(struct, class, 함수 정의 등)와 실행부(변수 선언, 함수 호출 등)를 분리하여
+ * 실행부만 main()으로 감쌉니다.
+ */
+function ensureMain(code: string): string {
+    // main 함수가 이미 있으면 그대로 반환
+    if (/\b(?:int|void)\s+main\s*\(/.test(code)) {
+        return code;
+    }
+
+    const lines = code.split(/\r?\n/);
+    const declarationLines: string[] = [];
+    const statementLines: string[] = [];
+    let braceDepth = 0;
+    let inDeclaration = false;
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+
+        // 중괄호 개수
+        const opens = (trimmed.match(/\{/g) || []).length;
+        const closes = (trimmed.match(/\}/g) || []).length;
+
+        // 중괄호 블록 내부 (struct/class/함수 본문)는 선언부
+        if (braceDepth > 0 || inDeclaration) {
+            declarationLines.push(line);
+            braceDepth += opens - closes;
+            if (braceDepth <= 0) {
+                braceDepth = 0;
+                inDeclaration = false;
+            }
+            continue;
+        }
+
+        // 최상위 레벨 선언 시작 패턴
+        // 함수 정의: "ReturnType funcName(" 형태이되 세미콜론으로 끝나지 않는 경우
+        // (세미콜론으로 끝나면 변수 선언: "Type var(args);")
+        const looksLikeFunc = /^(?:(?:static|inline|const|constexpr|extern|virtual|void|int|float|double|char|bool|long|short|unsigned|signed|auto)\s+)*\w+(?:<[^>]*>)?(?:\s*\*)*\s+\w+\s*\(/.test(trimmed)
+            && !trimmed.endsWith(';');
+        const isDecl = /^(#|\/\/|\/\*|\*|struct\s|class\s|template\s|typedef\s|using\s|enum\s)/.test(trimmed)
+            || looksLikeFunc
+            || trimmed === ''
+            || /^\}\s*;?\s*$/.test(trimmed);
+
+        if (isDecl) {
+            declarationLines.push(line);
+            braceDepth += opens - closes;
+            if (braceDepth > 0) inDeclaration = true;
+        } else {
+            statementLines.push(line);
+        }
+    }
+
+    if (statementLines.length === 0) {
+        // 실행 코드가 없으면 빈 main() 추가
+        return code + '\n\nint main() {\n    return 0;\n}\n';
+    }
+
+    // 선언부 유지 + 실행부를 main()으로 감싸기
+    return declarationLines.join('\n') + '\n\nint main() {\n'
+        + statementLines.map(l => '    ' + l).join('\n')
+        + '\n    return 0;\n}\n';
+}
+
+/**
  * C++ 코드를 분석하고 추적 코드를 삽입합니다.
  */
 export function instrument(code: string): string {
+    code = ensureMain(code);
     const structs = parseStructs(code);
     const varTypes = new Map<string, string>(); // varName -> typeName
     const lines = code.split(/\r?\n/);
     const output: string[] = [];
 
     output.push('#include "__tracer.h"');
+    output.push('#include <cstdlib>');
     output.push('');
 
     let braceDepth = 0;
@@ -162,9 +229,11 @@ export function instrument(code: string): string {
                 const lowerMethod = methodName.toLowerCase();
                 if (STL_PUSH_METHODS.includes(lowerMethod) && args) {
                     output.push(`    __vt::push_val(${lineNum}, "${varName}", (${args}));`);
+                    output.push(`    __vt_guard_${varName}.onPush();`);
                     methodInstrumented = true;
                 } else if (STL_POP_METHODS.includes(lowerMethod)) {
                     output.push(`    __vt::pop(${lineNum}, "${varName}");`);
+                    output.push(`    __vt_guard_${varName}.onPop();`);
                     methodInstrumented = true;
                 }
             }
@@ -178,8 +247,8 @@ export function instrument(code: string): string {
             continue;
         }
 
-        // 패턴 1: new 할당 (const/static/volatile 접두사 허용)
-        const newMatch = trimmed.match(/^(?:const\s+|static\s+|volatile\s+)*(\w+(?:<[^>]+>)?)\s*\*\s*(\w+)\s*=\s*new\s+(\w+(?:<[^>]+>)?)\s*(?:\([^;]*\))?\s*;/);
+        // 패턴 1: new 할당 (const/static/volatile 접두사 허용, 괄호/중괄호 초기화 모두 지원)
+        const newMatch = trimmed.match(/^(?:const\s+|static\s+|volatile\s+)*(\w+(?:<[^>]+>)?)\s*\*\s*(\w+)\s*=\s*new\s+(\w+(?:<[^>]+>)?)\s*(?:\([^;]*\)|\{[^}]*\})?\s*;/);
         if (newMatch) {
             const varName = newMatch[2];
             const typeName = newMatch[3];
@@ -191,8 +260,8 @@ export function instrument(code: string): string {
             continue;
         }
 
-        // 패턴 2: 멤버 포인터에 new 할당
-        const memberNewMatch = trimmed.match(/^([\w]+(?:->[\w]+)*)->(\w+)\s*=\s*new\s+(\w+(?:<[^>]+>)?)\s*(?:\([^;]*\))?\s*;/);
+        // 패턴 2: 멤버 포인터에 new 할당 (괄호/중괄호 초기화 모두 지원)
+        const memberNewMatch = trimmed.match(/^([\w]+(?:->[\w]+)*)->(\w+)\s*=\s*new\s+(\w+(?:<[^>]+>)?)\s*(?:\([^;]*\)|\{[^}]*\})?\s*;/);
         if (memberNewMatch) {
             const varPath = memberNewMatch[1];
             const fieldName = memberNewMatch[2];
@@ -303,6 +372,7 @@ export function instrument(code: string): string {
             if (hint) {
                 varTypes.set(varName, `std::${containerName}`);
                 output.push(`    __vt::alloc(${lineNum}, "${varName}", &${varName}, "std::${containerName}", "${hint}");`);
+                output.push(`    __vt::__container_guard __vt_guard_${varName}("${varName}");`);
                 continue;
             }
         }
@@ -317,6 +387,10 @@ export function instrument(code: string): string {
                 varTypes.set(varName, typeName);
                 const hintAttr = struct.hint ? `, "${struct.hint}"` : '';
                 output.push(`    __vt::alloc(${lineNum}, "${varName}", &${varName}, "${struct.name}"${hintAttr});`);
+                // 큐/스택 객체에 RAII scope guard 추가 — 소멸 시 남은 항목 자동 POP
+                if (struct.hint === 'stack' || struct.hint === 'queue') {
+                    output.push(`    __vt::__container_guard __vt_guard_${varName}("${varName}");`);
+                }
             }
             continue;
         }
@@ -363,8 +437,11 @@ export function parseStructs(code: string): StructDef[] {
             const trimmed = fline.trim();
             if (!trimmed || trimmed.includes('(') || trimmed.includes('~')) continue;
 
+            // Strip default initializers: "int top = -1" → "int top", "Node *a = nullptr, *b = nullptr" → "Node *a, *b"
+            const stripped = trimmed.replace(/\s*=\s*[^,;]+/g, '');
+
             // Multi-variable declaration: "int a, b, c;" or "Node* left, *right;"
-            const multiVarMatch = trimmed.match(/^(\w+(?:<[^>]+>)?)\s+([\w\s*,\[\]]+)$/);
+            const multiVarMatch = stripped.match(/^(\w+(?:<[^>]+>)?)\s+([\w\s*,\[\]]+)$/);
             if (multiVarMatch) {
                 const type = multiVarMatch[1];
                 const vars = multiVarMatch[2].split(',');
@@ -382,7 +459,7 @@ export function parseStructs(code: string): StructDef[] {
             }
 
             // Single field with optional array: "int data[100]"
-            const fieldMatch = trimmed.match(/^(\w+(?:<[^>]+>)?)\s*(\*?)\s*(\w+)(?:\s*\[.*\])?$/);
+            const fieldMatch = stripped.match(/^(\w+(?:<[^>]+>)?)\s*(\*?)\s*(\w+)(?:\s*\[.*\])?$/);
             if (fieldMatch) {
                 fields.push({
                     name: fieldMatch[3],
@@ -422,6 +499,15 @@ export function parseStructs(code: string): StructDef[] {
             // push+pop이지만 front/rear 필드가 있으면 FIFO → queue
             hint = 'queue';
         } else if (methodSet.has('push') && methodSet.has('pop')) {
+            hint = 'stack';
+        // 완화된 fallback 규칙: 단일 메서드만으로도 힌트 부여
+        } else if (methodSet.has('enqueue') || (hasQueueFields && (methodSet.has('push') || methodSet.has('push_back')))) {
+            hint = 'queue';
+        } else if (methodSet.has('dequeue') || methodSet.has('pop_front')) {
+            hint = 'queue';
+        } else if (methodSet.has('push') && !hasQueueFields) {
+            hint = 'stack';
+        } else if (methodSet.has('pop')) {
             hint = 'stack';
         } else if (selfPointerCount >= 2) {
             hint = 'tree';

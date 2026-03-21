@@ -167,6 +167,21 @@ namespace __vt {
                   << ",\"raw\":\"" << raw << "\""
                   << "}" << std::endl;
     }
+
+    // RAII scope guard: 큐/스택 객체가 소멸될 때 남은 항목에 대해 POP 트레이스를 자동 emit
+    struct __container_guard {
+        const char* name;
+        int count;
+        __container_guard(const char* n) : name(n), count(0) {}
+        ~__container_guard() {
+            while (count > 0) {
+                pop(0, name);
+                count--;
+            }
+        }
+        void onPush() { count++; }
+        void onPop() { if (count > 0) count--; }
+    };
 }
 
 #endif
