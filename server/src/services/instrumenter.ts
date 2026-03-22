@@ -5,7 +5,7 @@
 
 interface StructDef {
     name: string;
-    fields: { name: string; type: string; isPointer: boolean }[];
+    fields: { name: string; type: string; isPointer: boolean; isArray?: boolean }[];
     methods: string[];
     hint?: 'stack' | 'queue' | 'node' | 'tree';
 }
@@ -257,6 +257,17 @@ export function instrument(code: string): string {
             const struct = structs.find(s => s.name === baseTypeName || s.name === typeName);
             const hintAttr = struct?.hint ? `, "${struct.hint}"` : '';
             output.push(`    __vt::alloc(${lineNum}, "${varName}", ${varName}, "${typeName}"${hintAttr});`);
+            // ALLOC 직후 필드 초기값 트레이스 (집합 초기화 / 생성자 초기화 모두 커버)
+            if (struct) {
+                for (const field of struct.fields) {
+                    if (field.isArray) continue;
+                    if (field.isPointer) {
+                        output.push(`    __vt::set_ptr(${lineNum}, "${varName}", "${field.name}", ${varName}, ${varName}->${field.name});`);
+                    } else {
+                        output.push(`    __vt::${getTraceSetFn(field.type)}(${lineNum}, "${varName}", "${field.name}", ${varName}, ${varName}->${field.name});`);
+                    }
+                }
+            }
             continue;
         }
 
@@ -270,6 +281,17 @@ export function instrument(code: string): string {
             const struct = structs.find(s => s.name === baseTypeName || s.name === typeName);
             const hintAttr = struct?.hint ? `, "${struct.hint}"` : '';
             output.push(`    __vt::alloc(${lineNum}, "${varPath}->${fieldName}", ${varPath}->${fieldName}, "${typeName}"${hintAttr});`);
+            // ALLOC 직후 새 노드의 필드 초기값 트레이스
+            if (struct) {
+                for (const f of struct.fields) {
+                    if (f.isArray) continue;
+                    if (f.isPointer) {
+                        output.push(`    __vt::set_ptr(${lineNum}, "${varPath}->${fieldName}", "${f.name}", ${varPath}->${fieldName}, ${varPath}->${fieldName}->${f.name});`);
+                    } else {
+                        output.push(`    __vt::${getTraceSetFn(f.type)}(${lineNum}, "${varPath}->${fieldName}", "${f.name}", ${varPath}->${fieldName}, ${varPath}->${fieldName}->${f.name});`);
+                    }
+                }
+            }
             output.push(`    __vt::set_ptr(${lineNum}, "${varPath}", "${fieldName}", ${varPath}, ${varPath}->${fieldName});`);
             continue;
         }
@@ -446,12 +468,13 @@ export function parseStructs(code: string): StructDef[] {
                 const type = multiVarMatch[1];
                 const vars = multiVarMatch[2].split(',');
                 for (const v of vars) {
-                    const vm = v.trim().match(/^(\*?)\s*(\w+)(?:\s*\[.*\])?$/);
+                    const vm = v.trim().match(/^(\*?)\s*(\w+)(\s*\[.*\])?$/);
                     if (vm) {
                         fields.push({
                             name: vm[2],
                             type,
                             isPointer: vm[1] === '*',
+                            isArray: !!vm[3],
                         });
                     }
                 }
@@ -459,12 +482,13 @@ export function parseStructs(code: string): StructDef[] {
             }
 
             // Single field with optional array: "int data[100]"
-            const fieldMatch = stripped.match(/^(\w+(?:<[^>]+>)?)\s*(\*?)\s*(\w+)(?:\s*\[.*\])?$/);
+            const fieldMatch = stripped.match(/^(\w+(?:<[^>]+>)?)\s*(\*?)\s*(\w+)(\s*\[.*\])?$/);
             if (fieldMatch) {
                 fields.push({
                     name: fieldMatch[3],
                     type: fieldMatch[1],
                     isPointer: fieldMatch[2] === '*',
+                    isArray: !!fieldMatch[4],
                 });
             }
         }
@@ -510,7 +534,10 @@ export function parseStructs(code: string): StructDef[] {
         } else if (methodSet.has('pop')) {
             hint = 'stack';
         } else if (selfPointerCount >= 2) {
-            hint = 'tree';
+            // 이중 연결 리스트 vs 트리 구분: prev/previous/back 등의 필드명이 있으면 이중 연결 리스트
+            const doublyLinkedNames = ['prev', 'previous', 'before', 'back', 'prior'];
+            const isDoublyLinked = selfPointers.some(f => doublyLinkedNames.includes(f.name.toLowerCase()));
+            hint = isDoublyLinked ? 'node' : 'tree';
         } else if (selfPointerCount === 1) {
             hint = 'node';
         }
