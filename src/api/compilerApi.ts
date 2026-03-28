@@ -11,7 +11,7 @@ export interface TraceStep {
     addr?: string;
     target?: string;
     struct?: string;
-    hint?: 'stack' | 'queue' | 'node' | 'tree';
+    hint?: 'stack' | 'queue' | 'node' | 'tree' | 'circular';
     raw?: string;
     output?: string;
 }

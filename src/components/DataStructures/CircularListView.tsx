@@ -46,8 +46,8 @@ function getCircularOrder(nodes: MemoryNode[], headId: string | null): string[] 
     while (current && !visited.has(current) && nodeMap.has(current)) {
         visited.add(current);
         order.push(current);
-        const node = nodeMap.get(current)!;
-        const nextPtr = Object.values(node.pointers).find(p => p && !visited.has(p)) ?? null;
+        const node: MemoryNode = nodeMap.get(current)!;
+        const nextPtr: string | null = (Object.values(node.pointers) as (string | null)[]).find((p): p is string => !!p && !visited.has(p)) ?? null;
         current = nextPtr ?? null;
     }
     // Append any unreachable nodes
