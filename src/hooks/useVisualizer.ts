@@ -8,6 +8,7 @@ import type {
     QueueState,
     MemoryState,
     TreeState,
+    CircularState,
 } from '../types';
 import { nextId, resetParserIds } from '../utils/ids';
 import { compileCode } from '../api/compilerApi';
@@ -47,6 +48,9 @@ function findOrCreateStructure(
             break;
         case 'tree':
             newStructure = { type: 'tree', name: targetName, nodes: [], rootId: null };
+            break;
+        case 'circular':
+            newStructure = { type: 'circular', name: targetName, nodes: [], headId: null };
             break;
     }
     return [...structures, newStructure];
@@ -108,6 +112,21 @@ function executeCommand(
                         rootId: tree.rootId ?? command.nodeId!,
                     };
                 }
+                if (s.type === 'circular') {
+                    const circ = s as CircularState;
+                    const newNode = {
+                        id: command.nodeId!,
+                        type: command.structType || 'Node',
+                        fields: {},
+                        pointers: {},
+                        labels: command.label ? [command.label] : []
+                    };
+                    return {
+                        ...circ,
+                        nodes: [...circ.nodes, newNode],
+                        headId: circ.headId ?? command.nodeId!,
+                    };
+                }
                 if (s.type !== 'memory') return s;
                 const mem = s as MemoryState;
                 return {
@@ -122,7 +141,7 @@ function executeCommand(
                 };
             }
             case 'SET_LABEL': {
-                if (s.type !== 'memory' && s.type !== 'tree') return s;
+                if (s.type !== 'memory' && s.type !== 'tree' && s.type !== 'circular') return s;
                 const state = s as MemoryState | TreeState;
                 const label = command.label!;
                 const targetNodeId = command.nodeId;
@@ -139,7 +158,7 @@ function executeCommand(
                 };
             }
             case 'SET_FIELD': {
-                if (s.type !== 'memory' && s.type !== 'tree') return s;
+                if (s.type !== 'memory' && s.type !== 'tree' && s.type !== 'circular') return s;
                 const state = s as MemoryState | TreeState;
                 return {
                     ...state,
@@ -151,7 +170,7 @@ function executeCommand(
                 };
             }
             case 'SET_POINTER': {
-                if (s.type !== 'memory' && s.type !== 'tree') return s;
+                if (s.type !== 'memory' && s.type !== 'tree' && s.type !== 'circular') return s;
                 const state = s as MemoryState | TreeState;
                 return {
                     ...state,
@@ -163,8 +182,8 @@ function executeCommand(
                 };
             }
             case 'DELETE_NODE': {
-                if (s.type !== 'memory' && s.type !== 'tree') return s;
-                const state = s as MemoryState | TreeState;
+                if (s.type !== 'memory' && s.type !== 'tree' && s.type !== 'circular') return s;
+                const state = s as MemoryState | TreeState | CircularState;
                 const filtered = state.nodes.filter(n => n.id !== command.nodeId);
                 if (s.type === 'tree') {
                     const tree = state as TreeState;
@@ -172,6 +191,14 @@ function executeCommand(
                         ...tree,
                         nodes: filtered,
                         rootId: tree.rootId === command.nodeId ? (filtered.length > 0 ? filtered[0].id : null) : tree.rootId,
+                    };
+                }
+                if (s.type === 'circular') {
+                    const circ = state as CircularState;
+                    return {
+                        ...circ,
+                        nodes: filtered,
+                        headId: circ.headId === command.nodeId ? (filtered.length > 0 ? filtered[0].id : null) : circ.headId,
                     };
                 }
                 return { ...state, nodes: filtered };

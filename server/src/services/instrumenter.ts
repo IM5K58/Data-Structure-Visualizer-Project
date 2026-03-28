@@ -8,6 +8,8 @@ interface StructDef {
     fields: { name: string; type: string; isPointer: boolean; isArray?: boolean }[];
     methods: string[];
     hint?: 'stack' | 'queue' | 'node' | 'tree';
+    suppressInternals?: boolean; // AI 또는 정적 분석에서 결정
+    extendedHint?: 'circular'; // circular_linked_list 전달용
 }
 
 // STL 컨테이너 → 자료구조 힌트 매핑
@@ -86,12 +88,36 @@ function ensureMain(code: string): string {
         + '\n    return 0;\n}\n';
 }
 
+
 /**
  * C++ 코드를 분석하고 추적 코드를 삽입합니다.
  */
-export function instrument(code: string): string {
+export function instrument(code: string, analysis?: import('./codeAnalyzer.js').CodeAnalysis | null): string {
     code = ensureMain(code);
     const structs = parseStructs(code);
+    if (analysis) {
+        // AI 힌트를 동기적으로 적용 (dynamic import 없이 직접 처리)
+        if (analysis.confidence >= 0.7) {
+            for (const struct of structs) {
+                const ai = analysis.structClassifications[struct.name];
+                if (!ai) continue;
+                const hintMap: Record<string, 'stack' | 'queue' | 'node' | 'tree'> = {
+                    singly_linked_list: 'node',
+                    doubly_linked_list: 'node',
+                    circular_linked_list: 'node',
+                    binary_tree: 'tree',
+                    nary_tree: 'tree',
+                    bst: 'tree',
+                    stack: 'stack',
+                    queue: 'queue',
+                };
+                const mapped = hintMap[ai.hint];
+                if (mapped !== undefined) struct.hint = mapped;
+                struct.suppressInternals = ai.suppressInternals;
+                if (ai.hint === 'circular_linked_list') struct.extendedHint = 'circular';
+            }
+        }
+    }
     const varTypes = new Map<string, string>(); // varName -> typeName
     const lines = code.split(/\r?\n/);
     const output: string[] = [];
@@ -241,9 +267,8 @@ export function instrument(code: string): string {
         }
 
         // Stack/Queue 컨테이너 내부 메서드 본문에서는 패턴 1-5 계측 억제
-        // 외부 호출 시 push_val/pop만으로 충분하며, 내부 new/set_ptr/delete가
-        // memory 뷰에 누출되는 것을 방지
-        if (currentStruct && (currentStruct.hint === 'stack' || currentStruct.hint === 'queue')) {
+        // suppressInternals 플래그(AI 제공) 또는 stack/queue 힌트일 때 적용
+        if (currentStruct && (currentStruct.suppressInternals ?? (currentStruct.hint === 'stack' || currentStruct.hint === 'queue'))) {
             continue;
         }
 
@@ -255,7 +280,8 @@ export function instrument(code: string): string {
             varTypes.set(varName, typeName);
             const baseTypeName = typeName.split('<')[0];
             const struct = structs.find(s => s.name === baseTypeName || s.name === typeName);
-            const hintAttr = struct?.hint ? `, "${struct.hint}"` : '';
+            const effectiveHint = struct?.extendedHint ?? struct?.hint;
+            const hintAttr = effectiveHint ? `, "${effectiveHint}"` : '';
             output.push(`    __vt::alloc(${lineNum}, "${varName}", ${varName}, "${typeName}"${hintAttr});`);
             // ALLOC 직후 필드 초기값 트레이스 (집합 초기화 / 생성자 초기화 모두 커버)
             if (struct) {
@@ -279,7 +305,8 @@ export function instrument(code: string): string {
             const typeName = memberNewMatch[3];
             const baseTypeName = typeName.split('<')[0];
             const struct = structs.find(s => s.name === baseTypeName || s.name === typeName);
-            const hintAttr = struct?.hint ? `, "${struct.hint}"` : '';
+            const effectiveHint2 = struct?.extendedHint ?? struct?.hint;
+            const hintAttr = effectiveHint2 ? `, "${effectiveHint2}"` : '';
             output.push(`    __vt::alloc(${lineNum}, "${varPath}->${fieldName}", ${varPath}->${fieldName}, "${typeName}"${hintAttr});`);
             // ALLOC 직후 새 노드의 필드 초기값 트레이스
             if (struct) {
@@ -535,8 +562,8 @@ export function parseStructs(code: string): StructDef[] {
             hint = 'stack';
         } else if (selfPointerCount >= 2) {
             // 이중 연결 리스트 vs 트리 구분: prev/previous/back 등의 필드명이 있으면 이중 연결 리스트
-            const doublyLinkedNames = ['prev', 'previous', 'before', 'back', 'prior'];
-            const isDoublyLinked = selfPointers.some(f => doublyLinkedNames.includes(f.name.toLowerCase()));
+            const doublyLinkedPatterns = [/prev/i, /back/i, /prior/i, /pred/i, /bwd/i, /before/i, /parent/i, /llink/i];
+            const isDoublyLinked = selfPointers.some(f => doublyLinkedPatterns.some(p => p.test(f.name)));
             hint = isDoublyLinked ? 'node' : 'tree';
         } else if (selfPointerCount === 1) {
             hint = 'node';
@@ -597,6 +624,6 @@ export function parseTraceOutput(stdout: string): { userOutput: string; steps: T
 export interface TraceStep {
     step: number; line: number; type: string; var?: string; field?: string;
     source?: string; value?: number | string; addr?: string; target?: string;
-    struct?: string; hint?: 'stack' | 'queue' | 'node' | 'tree';
+    struct?: string; hint?: 'stack' | 'queue' | 'node' | 'tree' | 'circular';
     raw?: string; output?: string;
 }

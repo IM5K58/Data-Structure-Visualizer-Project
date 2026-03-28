@@ -15,6 +15,8 @@ export function mapTraceToCommands(steps: TraceStep[]): Command[] {
     function resolveNodeTarget(addr: string | undefined, varName: string | undefined): { target: TargetType; targetName: string } {
         if (addr && addrToTarget.get(addr) === 'tree') return { target: 'tree', targetName: 'Tree' };
         if (varName && varToTarget.get(varName) === 'tree') return { target: 'tree', targetName: 'Tree' };
+        if (addr && addrToTarget.get(addr) === 'circular') return { target: 'circular', targetName: 'Circular' };
+        if (varName && varToTarget.get(varName) === 'circular') return { target: 'circular', targetName: 'Circular' };
         return { target: 'memory', targetName: 'Heap' };
     }
 
@@ -29,6 +31,7 @@ export function mapTraceToCommands(steps: TraceStep[]): Command[] {
                     if (step.hint === 'stack') varToTarget.set(step.var, 'stack');
                     else if (step.hint === 'queue') varToTarget.set(step.var, 'queue');
                     else if (step.hint === 'tree') varToTarget.set(step.var, 'tree');
+                    else if (step.hint === 'circular') varToTarget.set(step.var, 'circular');
                     else varToTarget.set(step.var, 'memory');
                 }
 
@@ -38,11 +41,13 @@ export function mapTraceToCommands(steps: TraceStep[]): Command[] {
                     break;
                 }
 
-                // Track address→target mapping for tree nodes
+                // Track address→target mapping for tree/circular nodes
                 const isTree = step.hint === 'tree';
+                const isCircular = step.hint === 'circular';
                 if (step.addr && isTree) addrToTarget.set(step.addr, 'tree');
-                const target: TargetType = isTree ? 'tree' : 'memory';
-                const targetName = isTree ? 'Tree' : 'Heap';
+                if (step.addr && isCircular) addrToTarget.set(step.addr, 'circular');
+                const target: TargetType = isTree ? 'tree' : isCircular ? 'circular' : 'memory';
+                const targetName = isTree ? 'Tree' : isCircular ? 'Circular' : 'Heap';
 
                 commands.push({
                     type: 'ALLOCATE_NODE',
@@ -213,13 +218,13 @@ function analyzeAndReclassify(commands: Command[]): Command[] {
     const nodeStructTypes = new Map<string, string>();
 
     for (const cmd of commands) {
-        if (cmd.type === 'ALLOCATE_NODE' && cmd.target === 'memory' && cmd.nodeId) {
+        if (cmd.type === 'ALLOCATE_NODE' && (cmd.target === 'memory' || cmd.target === 'circular') && cmd.nodeId) {
             memoryNodeIds.add(cmd.nodeId);
             outEdges.set(cmd.nodeId, new Set());
             inDegree.set(cmd.nodeId, 0);
             if (cmd.structType) nodeStructTypes.set(cmd.nodeId, cmd.structType);
         }
-        if (cmd.type === 'DELETE_NODE' && cmd.target === 'memory' && cmd.nodeId) {
+        if (cmd.type === 'DELETE_NODE' && (cmd.target === 'memory' || cmd.target === 'circular') && cmd.nodeId) {
             memoryNodeIds.delete(cmd.nodeId);
         }
     }
@@ -227,20 +232,22 @@ function analyzeAndReclassify(commands: Command[]): Command[] {
     // If no memory nodes, nothing to reclassify
     if (memoryNodeIds.size < 2) return commands;
 
-    // Build pointer graph from SET_POINTER commands on memory nodes
+    // Build pointer graph from SET_POINTER commands on memory nodes.
+    // Track per-field last assignment to avoid stale edges from pointer reassignments.
+    const fieldEdges = new Map<string, Map<string, string>>();
     for (const cmd of commands) {
-        if (cmd.type === 'SET_POINTER' && cmd.target === 'memory' && cmd.nodeId) {
-            const from = cmd.nodeId;
-            const to = cmd.pointerTo;
-            if (!outEdges.has(from)) continue;
-
-            // Clear previous edges for this field to handle pointer reassignment
-            // (We rebuild the final state, not intermediate states)
-            const edges = outEdges.get(from)!;
-
-            if (to && memoryNodeIds.has(to)) {
-                edges.add(to);
-                inDegree.set(to, (inDegree.get(to) || 0) + 1);
+        if (cmd.type === 'SET_POINTER' && (cmd.target === 'memory' || cmd.target === 'circular') && cmd.nodeId && cmd.property) {
+            if (!fieldEdges.has(cmd.nodeId)) fieldEdges.set(cmd.nodeId, new Map());
+            fieldEdges.get(cmd.nodeId)!.set(cmd.property, cmd.pointerTo ?? '');
+        }
+    }
+    // Reconstruct outEdges/inDegree from final field state only
+    for (const [nodeId, fields] of fieldEdges) {
+        if (!memoryNodeIds.has(nodeId)) continue;
+        for (const [, target] of fields) {
+            if (target && memoryNodeIds.has(target)) {
+                outEdges.get(nodeId)?.add(target);
+                inDegree.set(target, (inDegree.get(target) || 0) + 1);
             }
         }
     }
@@ -275,17 +282,19 @@ function analyzeAndReclassify(commands: Command[]): Command[] {
     // Decision logic
     let detectedTarget: TargetType | null = null;
 
-    if (maxOutDegree >= 2 && !hasCycles && maxDepth > 1) {
+    if (hasCycles && maxOutDegree <= 1) {
+        // Single-link chain forming a loop → circular linked list
+        detectedTarget = 'circular';
+    } else if (maxOutDegree >= 2 && !hasCycles && maxDepth > 1) {
         // Branching, acyclic, depth > 1 → Tree
         detectedTarget = 'tree';
     }
-    // Linear chains (maxOutDegree <= 1) stay as 'memory' (linked list visualization)
-    // Cyclic graphs stay as 'memory' (general graph visualization)
+    // Linear chains (maxOutDegree <= 1, no cycles) stay as 'memory' (linked list visualization)
 
     // Apply reclassification if needed
     if (!detectedTarget) return commands;
 
-    const targetName = detectedTarget === 'tree' ? 'Tree' : 'Heap';
+    const targetName = detectedTarget === 'tree' ? 'Tree' : detectedTarget === 'circular' ? 'Circular' : 'Heap';
 
     // Group by struct type — only reclassify nodes of the same struct type
     const structTypesToReclassify = new Set<string>();

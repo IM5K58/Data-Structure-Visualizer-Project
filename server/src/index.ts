@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import compileRouter from './routes/compile.js';
+import { initializePCH } from './services/compiler.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3001');
@@ -30,4 +31,6 @@ app.listen(PORT, () => {
     console.log(`   Server:  http://localhost:${PORT}`);
     console.log(`   Piston:  ${process.env.PISTON_URL || 'http://localhost:2000'}`);
     console.log(`   Health:  http://localhost:${PORT}/api/health\n`);
+    // 서버 시작 직후 백그라운드에서 PCH 미리 컴파일
+    initializePCH();
 });

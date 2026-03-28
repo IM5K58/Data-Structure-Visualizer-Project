@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { executeCode } from '../services/compiler.js';
 import { instrument, parseTraceOutput } from '../services/instrumenter.js';
+import { analyzeCode } from '../services/codeAnalyzer.js';
 import type { CompileRequest, CompileResponse } from '../types/index.js';
 
 const router = Router();
@@ -13,7 +14,7 @@ router.post('/compile', async (req, res) => {
     const startTime = Date.now();
 
     try {
-        const { code, language, options } = req.body as CompileRequest;
+        const { code } = req.body as CompileRequest;
 
         if (!code || typeof code !== 'string') {
             res.status(400).json({
@@ -23,8 +24,14 @@ router.post('/compile', async (req, res) => {
             return;
         }
 
-        // 계측 코드 삽입
-        const instrumentedCode = instrument(code);
+        // AI 사전 분석 (ANTHROPIC_API_KEY 있을 때만, 실패 시 null 폴백)
+        let analysis = null;
+        if (process.env.GROQ_API_KEY) {
+            analysis = await analyzeCode(code);
+        }
+
+        // 계측 코드 삽입 (AI 힌트 있으면 함께 전달)
+        const instrumentedCode = instrument(code, analysis);
 
         // Piston 또는 로컬 g++로 코드 실행
         const stdin = (req.body as any).stdin || '';

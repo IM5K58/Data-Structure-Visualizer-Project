@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { writeFile, unlink, mkdir } from 'fs/promises';
+import { writeFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { tmpdir } from 'os';
@@ -7,13 +7,43 @@ import type { PistonExecuteResponse } from '../types/index.js';
 
 const GPP_PATH = process.env.GPP_PATH || (process.platform === 'win32' ? 'C:\\msys64\\ucrt64\\bin\\g++.exe' : '/usr/bin/g++');
 const PISTON_URL = process.env.PISTON_URL || '';
+const SANDBOX_DIR = join(process.cwd(), 'sandbox');
+
+// Linux에서는 RAM 기반 /dev/shm을 사용해 디스크 I/O 절감
+function getTempBase(): string {
+    return process.platform === 'linux' ? '/dev/shm' : tmpdir();
+}
+
+/**
+ * 서버 시작 시 __tracer.h 를 미리 컴파일하여 PCH(.gch) 생성.
+ * 이후 매 요청에서 헤더 파싱을 스킵하므로 컴파일 시간이 단축됩니다.
+ */
+export async function initializePCH(): Promise<void> {
+    if (PISTON_URL) return; // Piston 사용 시 불필요
+    try {
+        const tracerH = join(SANDBOX_DIR, '__tracer.h');
+        const result = await runProcess(
+            GPP_PATH,
+            ['-std=c++17', '-pipe', '-x', 'c++-header', tracerH],
+            SANDBOX_DIR,
+            30000
+        );
+        if (result.code === 0) {
+            console.log('  ✓ PCH compiled: __tracer.h.gch');
+        } else {
+            console.warn('  ⚠ PCH compilation failed (will compile without PCH):', result.stderr.slice(0, 200));
+        }
+    } catch (e) {
+        console.warn('  ⚠ PCH init error (skipped):', e);
+    }
+}
 
 /**
  * 로컬 g++로 코드를 컴파일하고 실행합니다.
  */
 export async function executeLocal(code: string, stdin: string = ''): Promise<PistonExecuteResponse> {
     const jobId = randomUUID();
-    const jobDir = join(tmpdir(), `vierasion-${jobId}`);
+    const jobDir = join(getTempBase(), `vierasion-${jobId}`);
     const srcFile = join(jobDir, 'main.cpp');
     const outFile = join(jobDir, 'main.exe');
 
@@ -22,7 +52,7 @@ export async function executeLocal(code: string, stdin: string = ''): Promise<Pi
 
     // 1. 컴파일
     const includeDir = join(process.cwd(), 'sandbox');
-    const compileResult = await runProcess(GPP_PATH, [srcFile, '-o', outFile, '-std=c++17', '-Wall', '-I', includeDir], jobDir, 10000);
+    const compileResult = await runProcess(GPP_PATH, [srcFile, '-o', outFile, '-std=c++17', '-pipe', '-I', includeDir], jobDir, 10000);
     console.log('  Compile result:', JSON.stringify(compileResult));
 
     if (compileResult.code !== 0) {

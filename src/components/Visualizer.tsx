@@ -4,6 +4,7 @@ import StackPlate from './DataStructures/StackPlate';
 import QueueBlock from './DataStructures/QueueBlock';
 import GraphView from './DataStructures/GraphView';
 import TreeChart from './DataStructures/TreeChart';
+import CircularListView from './DataStructures/CircularListView';
 
 interface Props {
     structures: DataStructureState[];
@@ -19,6 +20,8 @@ function renderStructure(structure: DataStructureState) {
             return <GraphView data={structure} />;
         case 'tree':
             return <TreeChart data={structure} />;
+        case 'circular':
+            return <CircularListView data={structure} />;
     }
 }
 
@@ -27,6 +30,7 @@ const TYPE_COLORS: Record<string, string> = {
     queue: 'border-accent-cyan/20',
     memory: 'border-accent-purple/40',
     tree: 'border-green-500/20',
+    circular: 'border-amber-500/30',
 };
 
 export default function Visualizer({ structures }: Props) {
@@ -106,7 +110,7 @@ export default function Visualizer({ structures }: Props) {
                     const id = `${structure.type}-${structure.name}`;
                     const dim = boxDimensions[id] || { 
                         w: -1, // -1 means use default or auto
-                        h: (structure.type === 'memory' || structure.type === 'tree' ? 450 : 300)
+                        h: (structure.type === 'memory' || structure.type === 'tree' || structure.type === 'circular' ? 450 : 300)
                     };
                     
                     return (

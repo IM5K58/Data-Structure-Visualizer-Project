@@ -1,40 +1,32 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import type { TreeState, MemoryNode } from '../../types';
+import type { CircularState, MemoryNode } from '../../types';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface Props {
-    data: TreeState;
+    data: CircularState;
 }
 
 interface LayoutNode {
     node: MemoryNode;
     x: number;
     y: number;
+    cx: number; // node center x
+    cy: number; // node center y
 }
 
-interface TreeEdge {
+interface CircularEdge {
     id: string;
     x1: number;
     y1: number;
     x2: number;
     y2: number;
+    isCycleBack: boolean;
     isNew: boolean;
 }
 
 const NODE_W = 144;
 const NODE_H_BASE = 36;
 const FIELD_H = 28;
-const H_GAP = 32;
-const LEVEL_HEIGHT = 120;
-
-/**
- * Returns all child pointer IDs for a node (supports N-ary trees).
- */
-function getChildIds(node: MemoryNode, allNodeIds: Set<string>): string[] {
-    return Object.values(node.pointers).filter(
-        (id): id is string => id !== null && id !== undefined && allNodeIds.has(id)
-    );
-}
 
 function nodeHeight(node: MemoryNode): number {
     return NODE_H_BASE + Object.keys(node.fields).length * FIELD_H +
@@ -42,72 +34,53 @@ function nodeHeight(node: MemoryNode): number {
 }
 
 /**
- * Computes N-ary tree layout using a two-pass bucket algorithm.
- * Pass 1 (bottom-up): compute subtree width for each node.
- * Pass 2 (top-down): assign X positions by distributing children proportionally.
- * All nodes at the same depth share the same Y coordinate.
+ * Follow pointer chain from headId to determine circular order.
+ * Returns node IDs in traversal order.
  */
-function computeLayout(nodes: MemoryNode[], rootId: string | null): LayoutNode[] {
-    if (nodes.length === 0 || !rootId) return [];
-
+function getCircularOrder(nodes: MemoryNode[], headId: string | null): string[] {
+    if (!headId || nodes.length === 0) return nodes.map(n => n.id);
     const nodeMap = new Map(nodes.map(n => [n.id, n]));
-    const allIds = new Set(nodes.map(n => n.id));
-    const positioned = new Map<string, LayoutNode>();
-    let orphanX = 0;
-
-    // Pass 1: compute subtree widths bottom-up
-    const subtreeWidths = new Map<string, number>();
-    function computeWidth(nodeId: string, visited: Set<string>): number {
-        if (visited.has(nodeId)) return NODE_W + H_GAP;
-        visited.add(nodeId);
-        const node = nodeMap.get(nodeId);
-        if (!node) return NODE_W + H_GAP;
-        const children = getChildIds(node, allIds);
-        if (children.length === 0) {
-            subtreeWidths.set(nodeId, NODE_W + H_GAP);
-            return NODE_W + H_GAP;
-        }
-        const total = children.reduce((sum, cid) => sum + computeWidth(cid, visited), 0);
-        subtreeWidths.set(nodeId, total);
-        return total;
+    const order: string[] = [];
+    const visited = new Set<string>();
+    let current: string | null = headId;
+    while (current && !visited.has(current) && nodeMap.has(current)) {
+        visited.add(current);
+        order.push(current);
+        const node = nodeMap.get(current)!;
+        const nextPtr = Object.values(node.pointers).find(p => p && !visited.has(p)) ?? null;
+        current = nextPtr ?? null;
     }
-    computeWidth(rootId, new Set());
-
-    // Pass 2: place nodes top-down
-    const visitedPlace = new Set<string>();
-    function placeNode(nodeId: string, depth: number, centerX: number): void {
-        if (visitedPlace.has(nodeId)) return;
-        visitedPlace.add(nodeId);
-        const node = nodeMap.get(nodeId);
-        if (!node) return;
-
-        positioned.set(nodeId, { node, x: centerX - NODE_W / 2, y: depth * LEVEL_HEIGHT });
-
-        const children = getChildIds(node, allIds);
-        if (children.length === 0) return;
-
-        const totalW = children.reduce((sum, cid) => sum + (subtreeWidths.get(cid) ?? NODE_W + H_GAP), 0);
-        let currentX = centerX - totalW / 2;
-        for (const cid of children) {
-            const cw = subtreeWidths.get(cid) ?? NODE_W + H_GAP;
-            placeNode(cid, depth + 1, currentX + cw / 2);
-            currentX += cw;
-        }
-    }
-    placeNode(rootId, 0, 0);
-
-    // Place any orphan nodes not reachable from root
-    nodes.forEach(n => {
-        if (!visitedPlace.has(n.id)) {
-            positioned.set(n.id, { node: n, x: orphanX, y: 0 });
-            orphanX += NODE_W + H_GAP;
-        }
-    });
-
-    return Array.from(positioned.values());
+    // Append any unreachable nodes
+    nodes.forEach(n => { if (!visited.has(n.id)) order.push(n.id); });
+    return order;
 }
 
-export default function TreeChart({ data }: Props) {
+function computeCircularLayout(nodes: MemoryNode[], headId: string | null): LayoutNode[] {
+    if (nodes.length === 0) return [];
+    const order = getCircularOrder(nodes, headId);
+    const nodeMap = new Map(nodes.map(n => [n.id, n]));
+    const N = order.length;
+    const R = Math.max(150, N * 50);
+    const padding = NODE_W;
+    const svgCx = R + padding;
+    const svgCy = R + padding;
+
+    return order.map((id, i) => {
+        const node = nodeMap.get(id)!;
+        const angle = (2 * Math.PI * i) / N - Math.PI / 2; // start at top
+        const cx = svgCx + R * Math.cos(angle);
+        const cy = svgCy + R * Math.sin(angle);
+        return {
+            node,
+            x: cx - NODE_W / 2,
+            y: cy - nodeHeight(node) / 2,
+            cx,
+            cy,
+        };
+    });
+}
+
+export default function CircularListView({ data }: Props) {
     const mainRef = useRef<HTMLDivElement>(null);
     const [scale, setScale] = useState(1);
     const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -117,7 +90,6 @@ export default function TreeChart({ data }: Props) {
     const [newNodeIds, setNewNodeIds] = useState<Set<string>>(new Set());
     const hasAutocentered = useRef(false);
 
-    // Track new nodes for entry animation
     useEffect(() => {
         const currentIds = new Set(data.nodes.map(n => n.id));
         const newlyAdded = new Set([...currentIds].filter(id => !prevNodeIds.current.has(id)));
@@ -128,7 +100,6 @@ export default function TreeChart({ data }: Props) {
         prevNodeIds.current = currentIds;
     }, [data.nodes]);
 
-    // Ctrl+Wheel zoom
     useEffect(() => {
         const container = mainRef.current;
         if (!container) return;
@@ -142,7 +113,6 @@ export default function TreeChart({ data }: Props) {
         return () => container.removeEventListener('wheel', onWheel);
     }, []);
 
-    // Drag-pan: use window listeners so absolutely-positioned nodes don't block
     const handleMouseDown = useCallback((e: React.MouseEvent) => {
         if (e.button !== 0) return;
         if ((e.target as HTMLElement).closest('button')) return;
@@ -171,67 +141,85 @@ export default function TreeChart({ data }: Props) {
 
     const resetView = () => { setScale(1); setOffset({ x: 0, y: 0 }); hasAutocentered.current = false; };
 
-    const layoutNodes = useMemo(() => computeLayout(data.nodes, data.rootId), [data.nodes, data.rootId]);
+    const layoutNodes = useMemo(
+        () => computeCircularLayout(data.nodes, data.headId),
+        [data.nodes, data.headId]
+    );
+    const posMap = useMemo(
+        () => new Map(layoutNodes.map(ln => [ln.node.id, ln])),
+        [layoutNodes]
+    );
     const allIds = useMemo(() => new Set(data.nodes.map(n => n.id)), [data.nodes]);
+    const order = useMemo(() => getCircularOrder(data.nodes, data.headId), [data.nodes, data.headId]);
 
-    // Auto-center tree in container on first render or when nodes change
+    // Auto-center on first render
     useEffect(() => {
         if (layoutNodes.length === 0 || !mainRef.current) return;
         if (hasAutocentered.current) return;
-
         const container = mainRef.current;
         const containerW = container.clientWidth;
         const containerH = container.clientHeight;
 
         const minX = Math.min(...layoutNodes.map(ln => ln.x));
         const maxX = Math.max(...layoutNodes.map(ln => ln.x)) + NODE_W;
+        const minY = Math.min(...layoutNodes.map(ln => ln.y));
         const maxY = Math.max(...layoutNodes.map(ln => ln.y + nodeHeight(ln.node)));
 
         const treeW = maxX - minX;
-        const treeH = maxY;
+        const treeH = maxY - minY;
 
         const offsetX = (containerW - treeW * scale) / 2 - minX * scale;
-        const offsetY = Math.max(50, (containerH - treeH * scale) / 2 - 20);
+        const offsetY = (containerH - treeH * scale) / 2 - minY * scale;
 
         setOffset({ x: offsetX, y: offsetY });
         hasAutocentered.current = true;
     }, [layoutNodes, scale]);
 
-    // Edges computed from layout positions
-    const edges = useMemo<TreeEdge[]>(() => {
-        const posMap = new Map(layoutNodes.map(ln => [ln.node.id, ln]));
-        const result: TreeEdge[] = [];
+    // Build edges following pointer chain
+    const edges = useMemo<CircularEdge[]>(() => {
+        const result: CircularEdge[] = [];
+        const nodeMap = new Map(data.nodes.map(n => [n.id, n]));
+        const orderSet = new Set(order);
 
-        layoutNodes.forEach(ln => {
-            const childPtrEntries = Object.entries(ln.node.pointers).filter(
-                ([, id]) => id && allIds.has(id!)
-            );
-            childPtrEntries.forEach(([, targetId], i) => {
-                if (!targetId) return;
-                const target = posMap.get(targetId);
-                if (!target) return;
+        for (let i = 0; i < order.length; i++) {
+            const fromId = order[i];
+            const node = nodeMap.get(fromId);
+            if (!node) continue;
+            const from = posMap.get(fromId);
+            if (!from) continue;
 
-                const srcH = nodeHeight(ln.node);
-                const n = childPtrEntries.length;
-                const spread = Math.min(NODE_W * 0.6, 20 * n);
-                const xShift = n > 1 ? ((i / (n - 1)) - 0.5) * spread : 0;
+            for (const [, targetId] of Object.entries(node.pointers)) {
+                if (!targetId || !allIds.has(targetId)) continue;
+                const to = posMap.get(targetId);
+                if (!to) continue;
+
+                // cycle-back edge: last node → first node (or back to already-visited)
+                const isCycleBack = orderSet.has(targetId) &&
+                    order.indexOf(targetId) < order.indexOf(fromId);
 
                 result.push({
-                    id: `${ln.node.id}-${i}-${targetId}`,
-                    x1: ln.x + NODE_W / 2 + xShift,
-                    y1: ln.y + srcH,
-                    x2: target.x + NODE_W / 2,
-                    y2: target.y,
+                    id: `${fromId}-${targetId}`,
+                    x1: from.cx,
+                    y1: from.cy,
+                    x2: to.cx,
+                    y2: to.cy,
+                    isCycleBack,
                     isNew: newNodeIds.has(targetId),
                 });
-            });
-        });
+            }
+        }
         return result;
-    }, [layoutNodes, newNodeIds, allIds]);
+    }, [layoutNodes, newNodeIds, allIds, order, posMap, data.nodes]);
 
     if (!data.nodes || data.nodes.length === 0) {
-        return <div className="p-4 text-text-muted text-xs font-mono">/* Tree Empty */</div>;
+        return <div className="p-4 text-text-muted text-xs font-mono">/* Circular List Empty */</div>;
     }
+
+    // SVG canvas size
+    const N = layoutNodes.length;
+    const R = Math.max(150, N * 50);
+    const padding = NODE_W;
+    const svgSize = (R + padding) * 2;
 
     return (
         <div
@@ -239,8 +227,8 @@ export default function TreeChart({ data }: Props) {
             className="flex flex-col items-center w-full min-h-[400px] h-full relative font-mono overflow-hidden select-none bg-black/5 rounded-lg cursor-grab"
             onMouseDown={handleMouseDown}
         >
-            <h3 className="text-xs font-bold text-green-400 mb-4 uppercase tracking-widest absolute top-0 left-4 z-20 pointer-events-none p-4">
-                Tree Visualization
+            <h3 className="text-xs font-bold text-amber-400 mb-4 uppercase tracking-widest absolute top-0 left-4 z-20 pointer-events-none p-4">
+                Circular List
             </h3>
 
             <div className="absolute top-4 right-4 z-30 flex items-center gap-2 bg-bg-panel/80 backdrop-blur-md border border-border p-1.5 rounded-lg shadow-xl pointer-events-auto">
@@ -253,38 +241,57 @@ export default function TreeChart({ data }: Props) {
                 style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`, transformOrigin: '0 0' }}
                 className="absolute inset-0"
             >
-                <svg className="absolute inset-0 w-full h-full pointer-events-none z-10 overflow-visible">
+                {/* SVG Edges */}
+                <svg
+                    style={{ width: svgSize, height: svgSize }}
+                    className="absolute pointer-events-none z-10 overflow-visible"
+                >
                     <defs>
-                        <marker id="tree-arrow" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
+                        <marker id="circ-arrow" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
                             <polygon points="0 0, 6 2, 0 4" fill="rgba(74, 222, 128, 0.8)" />
                         </marker>
+                        <marker id="circ-arrow-back" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
+                            <polygon points="0 0, 6 2, 0 4" fill="rgba(251, 191, 36, 0.9)" />
+                        </marker>
                     </defs>
-                    {edges.map(e => {
-                        const cy1 = e.y1 + 30;
-                        const cy2 = e.y2 - 30;
-                        const path = `M ${e.x1} ${e.y1} C ${e.x1} ${cy1}, ${e.x2} ${cy2}, ${e.x2} ${e.y2}`;
-                        return (
-                            <motion.path
-                                key={e.id}
-                                initial={e.isNew ? { pathLength: 0, opacity: 0 } : { pathLength: 1, opacity: 1 }}
-                                animate={{ pathLength: 1, opacity: 0.7 }}
-                                transition={{ duration: 0.6, ease: 'easeInOut', delay: e.isNew ? 0.2 : 0 }}
-                                d={path}
-                                fill="none"
-                                stroke="rgba(74, 222, 128, 0.8)"
-                                strokeWidth={2 / scale}
-                                markerEnd="url(#tree-arrow)"
-                                className="drop-shadow-[0_0_8px_rgba(74,222,128,0.3)]"
-                            />
-                        );
-                    })}
+                    <AnimatePresence>
+                        {edges.map(e => {
+                            const dx = e.x2 - e.x1;
+                            const dy = e.y2 - e.y1;
+                            const mx = (e.x1 + e.x2) / 2;
+                            const my = (e.y1 + e.y2) / 2;
+                            // Curve outward from center for cycle-back, inward for normal
+                            const curvature = e.isCycleBack ? 1.4 : 0.3;
+                            const cx1 = mx - dy * curvature;
+                            const cy1 = my + dx * curvature;
+                            const path = `M ${e.x1} ${e.y1} Q ${cx1} ${cy1} ${e.x2} ${e.y2}`;
+
+                            return (
+                                <motion.path
+                                    key={e.id}
+                                    initial={e.isNew ? { pathLength: 0, opacity: 0 } : { pathLength: 1, opacity: 1 }}
+                                    animate={{ pathLength: 1, opacity: e.isCycleBack ? 0.85 : 0.7 }}
+                                    exit={{ opacity: 0 }}
+                                    transition={{ duration: 0.6, ease: 'easeInOut', delay: e.isNew ? 0.2 : 0 }}
+                                    d={path}
+                                    fill="none"
+                                    stroke={e.isCycleBack ? 'rgba(251, 191, 36, 0.9)' : 'rgba(74, 222, 128, 0.8)'}
+                                    strokeWidth={2 / scale}
+                                    strokeDasharray={e.isCycleBack ? `${6 / scale} ${3 / scale}` : undefined}
+                                    markerEnd={e.isCycleBack ? 'url(#circ-arrow-back)' : 'url(#circ-arrow)'}
+                                    className={e.isCycleBack ? 'drop-shadow-[0_0_6px_rgba(251,191,36,0.4)]' : 'drop-shadow-[0_0_6px_rgba(74,222,128,0.3)]'}
+                                />
+                            );
+                        })}
+                    </AnimatePresence>
                 </svg>
 
+                {/* Nodes */}
                 <AnimatePresence>
                     {layoutNodes.map(ln => {
                         const { node, x, y } = ln;
                         const isNew = newNodeIds.has(node.id);
-                        const isRoot = node.id === data.rootId;
+                        const isHead = node.id === data.headId;
 
                         return (
                             <motion.div
@@ -301,30 +308,30 @@ export default function TreeChart({ data }: Props) {
                                     left: x,
                                     top: y,
                                     width: NODE_W,
-                                    transition: 'left 0.3s ease, top 0.3s ease',
+                                    transition: 'left 0.4s ease, top 0.4s ease',
                                 }}
                                 className="z-20"
                             >
-                                {isRoot && (
+                                {isHead && (
                                     <motion.div
                                         initial={{ opacity: 0, scale: 0.5 }}
                                         animate={{ opacity: 1, scale: 1 }}
-                                        className="absolute -top-8 left-1/2 -translate-x-1/2 bg-green-500 px-2 py-0.5 rounded text-[10px] font-bold text-white shadow-[0_0_15px_rgba(74,222,128,0.6)] z-30 whitespace-nowrap"
+                                        className="absolute -top-8 left-1/2 -translate-x-1/2 bg-amber-500 px-2 py-0.5 rounded text-[10px] font-bold text-white shadow-[0_0_15px_rgba(251,191,36,0.6)] z-30 whitespace-nowrap"
                                     >
-                                        ROOT
+                                        HEAD
                                     </motion.div>
                                 )}
 
-                                {(isNew || isRoot) && (
+                                {(isNew || isHead) && (
                                     <motion.div
                                         initial={{ opacity: 0 }}
-                                        animate={{ opacity: [0, 0.4, 0], scale: [0.9, 1.2, 0.9] }}
+                                        animate={{ opacity: [0, 0.35, 0], scale: [0.9, 1.2, 0.9] }}
                                         transition={{ duration: 1.5, repeat: Infinity }}
-                                        className="absolute inset-[-20px] bg-green-500/15 blur-[25px] rounded-full z-[-1]"
+                                        className="absolute inset-[-20px] bg-amber-500/15 blur-[25px] rounded-full z-[-1]"
                                     />
                                 )}
 
-                                <div className={`flex flex-col items-center transition-shadow duration-500 ${isNew || isRoot ? 'shadow-[0_0_40px_rgba(74,222,128,0.3)]' : ''}`}>
+                                <div className={`flex flex-col items-center transition-shadow duration-500 ${isNew || isHead ? 'shadow-[0_0_40px_rgba(251,191,36,0.3)]' : ''}`}>
                                     <div className="bg-bg-tertiary px-3 py-1 rounded-t-lg border border-border text-[10px] font-bold text-text-secondary w-full text-center tracking-wider z-10">
                                         {node.type}
                                     </div>
@@ -336,9 +343,9 @@ export default function TreeChart({ data }: Props) {
                                             </div>
                                         ))}
                                         {Object.entries(node.pointers).map(([pname, targetId]) => (
-                                            <div key={pname} className="flex border-b border-border/40 text-xs bg-green-500/5">
+                                            <div key={pname} className="flex border-b border-border/40 text-xs bg-amber-500/5">
                                                 <div className="w-[45%] p-1.5 border-r border-border/40 text-text-muted text-center bg-black/20 text-[11px] font-mono tracking-tighter truncate">{pname}</div>
-                                                <div className="w-[55%] p-1.5 text-green-400 text-center tracking-tighter truncate opacity-80 font-bold bg-green-500/5">
+                                                <div className="w-[55%] p-1.5 text-amber-400 text-center tracking-tighter truncate opacity-80 font-bold bg-amber-500/5">
                                                     {targetId ? `*${(targetId as string).slice(-4)}` : 'null'}
                                                 </div>
                                             </div>
@@ -352,7 +359,7 @@ export default function TreeChart({ data }: Props) {
                                 {node.labels.length > 0 && (
                                     <div className="mt-1 flex gap-1 flex-wrap justify-center">
                                         {node.labels.map(lbl => (
-                                            <span key={lbl} className="px-1.5 py-0.5 rounded bg-green-500/20 text-[9px] text-green-300 font-mono font-bold">
+                                            <span key={lbl} className="px-1.5 py-0.5 rounded bg-amber-500/20 text-[9px] text-amber-300 font-mono font-bold">
                                                 {lbl}
                                             </span>
                                         ))}

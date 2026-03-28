@@ -12,7 +12,7 @@ export type CommandType =
     | 'ERROR'
     | 'UNKNOWN';
 
-export type TargetType = 'stack' | 'queue' | 'memory' | 'tree';
+export type TargetType = 'stack' | 'queue' | 'memory' | 'tree' | 'circular';
 
 export interface Command {
     type: CommandType;
@@ -65,11 +65,19 @@ export interface TreeState {
     rootId: string | null;
 }
 
+export interface CircularState {
+    type: 'circular';
+    name: string;
+    nodes: MemoryNode[];
+    headId: string | null;
+}
+
 export type DataStructureState =
     | StackState
     | QueueState
     | MemoryState
-    | TreeState;
+    | TreeState
+    | CircularState;
 
 // ===== Visualizer State =====
 export interface VisualizerState {
