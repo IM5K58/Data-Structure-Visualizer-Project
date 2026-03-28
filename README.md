@@ -19,24 +19,27 @@ A web application that visualizes C++ data structures with real-time animations.
 ## How It Works
 
 ```
-C++ Code  -->  Instrumenter  -->  g++ Compile  -->  Execute  -->  Trace Output  -->  Runtime Analysis  -->  Visualization
-               (inject trace      (real binary)     (real run)    (__TRACE__ JSON)   (graph topology)      (React + Framer Motion)
-                calls)
+C++ Code  -->  AI Analysis  -->  Instrumenter  -->  g++ Compile  -->  Execute  -->  Trace Output  -->  Runtime Analysis  -->  Visualization
+               (Groq LLM)        (inject trace      (real binary)     (real run)    (__TRACE__ JSON)   (graph topology)      (React + Framer Motion)
+               struct hints       calls)
 ```
 
 1. User writes C++ code with custom structs / pointers
-2. Backend **instrumenter** injects trace calls (`__vt::alloc`, `__vt::set_ptr`, etc.)
-3. Code is compiled and executed with **g++** (C++17)
-4. Runtime trace output is parsed into step-by-step commands
-5. **Runtime pattern analysis** builds a pointer graph and detects data structure types by analyzing actual graph topology (out-degree, cycles, depth)
-6. Frontend replays commands as animated visualizations
+2. **Groq AI** (optional) pre-analyzes struct definitions and provides classification hints
+3. Backend **instrumenter** injects trace calls (`__vt::alloc`, `__vt::set_ptr`, etc.) using AI hints when available
+4. Code is compiled and executed with **g++** (C++17)
+5. Runtime trace output is parsed into step-by-step commands
+6. **Runtime pattern analysis** builds a pointer graph and detects data structure types by analyzing actual graph topology (out-degree, cycles, depth)
+7. Frontend replays commands as animated visualizations
 
 ---
 
 ## Key Features
 
 - **Real C++ Execution**: Compiles and runs actual C++ code via g++ backend. No simulation or pseudo-code parsing.
-- **Smart Auto-Detection**: Two-layer detection system:
+- **AI-Assisted Classification**: Optional Groq AI (free tier) pre-analyzes struct definitions to handle ambiguous field names and non-standard patterns. Falls back to regex when unavailable.
+- **Smart Auto-Detection**: Three-layer detection system:
+  - **AI analysis**: Groq LLM classifies struct types before instrumentation (if `GROQ_API_KEY` is set)
   - **Static analysis**: Method names (`push`/`pop` = Stack) and self-type pointer counts (2+ = Tree, 1 = Linked List)
   - **Runtime analysis**: Builds actual pointer graph from execution traces and reclassifies based on graph topology (branching, cycles, depth)
 - **Memory Graph Visualization**: Traces pointers (`->`), allocations (`new`), and deallocations (`delete`) to draw memory relationships.
@@ -55,22 +58,23 @@ C++ Code  -->  Instrumenter  -->  g++ Compile  -->  Execute  -->  Trace Output  
 |----------------|-------|------------------|---------------|
 | **Stack** | Purple | `push()` + `pop()` methods | Vertical plate stacking with TOP indicator |
 | **Queue** | Cyan | `enqueue()` + `dequeue()` methods | Horizontal conveyor belt with FRONT/BACK labels |
-| **Tree** | Green | 2+ self-type pointers OR runtime branching pattern | Hierarchical layout with ROOT badge, drag-to-pan |
+| **Tree (BST / N-ary)** | Green | 2+ self-type pointers OR runtime branching pattern | Hierarchical bucket layout with ROOT badge, drag-to-pan |
 | **Linked List** | Purple | 1 self-type pointer, linear chain | Graph view with arrow connections |
+| **Circular Linked List** | Amber | Runtime cycle detection (single outgoing pointer with loop) | Polygon layout with HEAD badge, amber dashed cycle-back edge |
 | **Memory (Heap)** | Purple | Fallback for pointer structures | Graph view with memory addresses |
 
 ### Smart Detection Pipeline
 
 ```
-Static Hint (compile-time)          Runtime Analysis (post-execution)
-  push/pop methods → Stack            (already classified)
-  enqueue/dequeue  → Queue            (already classified)
-  2+ self-pointers → Tree hint        → verify: branching + acyclic + depth > 1 → Tree
-  1 self-pointer   → Node hint        → verify: linear chain → Linked List
-  no hint          → Memory           → analyze pointer graph → reclassify if needed
+AI Hint (pre-compile, optional)     Static Hint (compile-time)          Runtime Analysis (post-execution)
+  Groq LLM classifies structs   →   push/pop methods → Stack            (already classified)
+  (confidence ≥ 0.7 to apply)       enqueue/dequeue  → Queue            (already classified)
+  falls back to static if null       2+ self-pointers → Tree hint        → verify: branching + acyclic + depth > 1 → Tree
+                                     1 self-pointer   → Node hint        → verify: linear chain → Linked List
+                                     no hint          → Memory           → cycle detected → Circular Linked List
 ```
 
-**Field names don't matter**: `left/right`, `a/b`, `child1/child2`, `ptr1/ptr2` — the system detects structure from actual runtime pointer topology.
+**Field names don't matter**: `left/right`, `a/b`, `child1/child2`, `ptr1/ptr2` — the system detects structure from actual runtime pointer topology. For truly ambiguous cases (e.g. non-standard field names like `p1`/`p2`), the AI layer resolves the ambiguity.
 
 **Supported C++ patterns**: `struct`, `class`, `private`/`public`/`protected`, `friend class`, constructors with initializer lists, `const`/`static` qualifiers, array fields, multi-variable declarations, `delete[]`.
 
@@ -201,6 +205,27 @@ int main() {
 }
 ```
 
+### Circular Linked List
+
+```cpp
+#include <iostream>
+using namespace std;
+
+struct Node {
+    int data;
+    Node* next;
+    Node(int v) : data(v), next(nullptr) {}
+};
+
+int main() {
+    Node* head = new Node(1);
+    head->next = new Node(2);
+    head->next->next = new Node(3);
+    head->next->next->next = head; // cycle back to head
+    return 0;
+}
+```
+
 ---
 
 ## Getting Started
@@ -234,6 +259,7 @@ Open `http://localhost:5173` in your browser.
 | `PORT` | `3001` | Server port (backend) |
 | `GPP_PATH` | Auto-detected | Path to g++ compiler |
 | `FRONTEND_URL` | — | Allowed CORS origin for production |
+| `GROQ_API_KEY` | — | Groq API key for AI struct classification (optional, free tier) |
 
 ---
 
@@ -249,7 +275,7 @@ Open `http://localhost:5173` in your browser.
 
 1. Connect GitHub repo to [Render](https://render.com)
 2. Set root directory to `server`, runtime to Docker
-3. Set env vars: `GPP_PATH=/usr/bin/g++`, `FRONTEND_URL=https://your-app.vercel.app`
+3. Set env vars: `GPP_PATH=/usr/bin/g++`, `FRONTEND_URL=https://your-app.vercel.app`, `GROQ_API_KEY=gsk_...` (optional)
 4. Deploy
 
 ---
@@ -277,7 +303,8 @@ src/
         ├── StackPlate.tsx     # Stack: vertical plate stacking
         ├── QueueBlock.tsx     # Queue: horizontal conveyor belt
         ├── GraphView.tsx      # Memory / Linked List: graph with arrows
-        └── TreeChart.tsx      # Tree: hierarchical drag-to-pan layout
+        ├── TreeChart.tsx      # Tree: hierarchical bucket layout (N-ary)
+        └── CircularListView.tsx # Circular Linked List: polygon layout
 
 server/
 ├── Dockerfile                # Docker image for deployment (Node.js + g++)
@@ -285,8 +312,9 @@ server/
 │   ├── index.ts              # Express server with CORS
 │   ├── routes/compile.ts     # POST /api/compile endpoint
 │   └── services/
-│       ├── compiler.ts       # g++ compilation & execution
-│       └── instrumenter.ts   # C++ code instrumentation & structural detection
+│       ├── compiler.ts       # g++ compilation & execution (PCH optimized)
+│       ├── instrumenter.ts   # C++ code instrumentation & structural detection
+│       └── codeAnalyzer.ts   # Groq AI struct classifier (optional)
 └── sandbox/
     └── __tracer.h            # C++ tracing header (injected at compile time)
 ```
@@ -318,6 +346,7 @@ This project is built with the following open-source libraries:
 | [CORS](https://github.com/expressjs/cors) | MIT | Cross-Origin Resource Sharing middleware |
 | [Node.js](https://nodejs.org/) | MIT | JavaScript runtime |
 | [tsx](https://github.com/privatenumber/tsx) | MIT | TypeScript execution for Node.js |
+| [groq-sdk](https://github.com/groq/groq-typescript) | Apache-2.0 | Groq API client for AI struct classification (optional) |
 
 ### Toolchain
 

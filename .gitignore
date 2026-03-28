@@ -61,6 +61,7 @@ Desktop.ini
 server/sandbox/*.exe
 server/sandbox/*.o
 server/sandbox/*.out
+server/sandbox/*.gch
 
 # Temporary files
 build_errors.txt
