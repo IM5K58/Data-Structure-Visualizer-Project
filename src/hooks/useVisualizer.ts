@@ -9,10 +9,12 @@ import type {
     MemoryState,
     TreeState,
     CircularState,
+    LocalVar,
 } from '../types';
 import { nextId, resetParserIds } from '../utils/ids';
 import { compileCode } from '../api/compilerApi';
 import { mapTraceToCommands } from '../engine/stepMapper';
+
 const initialState: VisualizerState = {
     structures: [],
     commandHistory: [],
@@ -23,6 +25,7 @@ const initialState: VisualizerState = {
     stdout: '',
     terminalOutput: '',
     stdin: '',
+    localVars: [],
 };
 
 function findOrCreateStructure(
@@ -213,9 +216,28 @@ function replayToStep(commands: Command[], targetStep: number): DataStructureSta
     resetParserIds();
     let structures: DataStructureState[] = [];
     for (let i = 0; i <= targetStep; i++) {
-        structures = executeCommand(structures, commands[i]);
+        if (commands[i].type !== 'LOCAL_VAR_UPDATE') {
+            structures = executeCommand(structures, commands[i]);
+        }
     }
     return structures;
+}
+
+function replayLocalVarsToStep(commands: Command[], targetStep: number): LocalVar[] {
+    const vars: LocalVar[] = [];
+    for (let i = 0; i <= targetStep; i++) {
+        const cmd = commands[i];
+        if (cmd.type !== 'LOCAL_VAR_UPDATE') continue;
+        const name = cmd.label ?? '';
+        const value = String(cmd.value ?? '');
+        const type = cmd.property ?? '';
+        const isLast = i === targetStep;
+        const idx = vars.findIndex(v => v.name === name);
+        const entry: LocalVar = { name, type, value, changed: isLast };
+        if (idx >= 0) vars[idx] = entry;
+        else vars.push(entry);
+    }
+    return vars;
 }
 
 function reducer(state: VisualizerState, action: VisualizerAction): VisualizerState {
@@ -226,6 +248,7 @@ function reducer(state: VisualizerState, action: VisualizerAction): VisualizerSt
                 ...initialState,
                 commandHistory: action.commands,
                 currentStep: -1,
+                localVars: [],
             };
         case 'STEP': {
             const nextStep = state.currentStep + 1;
@@ -233,18 +256,37 @@ function reducer(state: VisualizerState, action: VisualizerAction): VisualizerSt
                 return { ...state, isRunning: false };
             }
             const command = state.commandHistory[nextStep];
+
+            // LOCAL_VAR_UPDATE: update localVars, skip executeCommand
+            if (command.type === 'LOCAL_VAR_UPDATE') {
+                const name = command.label ?? '';
+                const value = String(command.value ?? '');
+                const type = command.property ?? '';
+                const cleared = state.localVars.map(v => ({ ...v, changed: false }));
+                const idx = cleared.findIndex(v => v.name === name);
+                const entry: LocalVar = { name, type, value, changed: true };
+                if (idx >= 0) cleared[idx] = entry;
+                else cleared.push(entry);
+                return {
+                    ...state,
+                    currentStep: nextStep,
+                    localVars: cleared,
+                    terminalOutput: state.terminalOutput + (command.output || ''),
+                };
+            }
+
             return {
                 ...state,
                 structures: executeCommand(state.structures, command),
                 currentStep: nextStep,
+                localVars: state.localVars.map(v => ({ ...v, changed: false })),
                 terminalOutput: state.terminalOutput + (command.output || ''),
             };
         }
         case 'STEP_BACK': {
             if (state.currentStep <= -1) return state;
             const prevStep = state.currentStep - 1;
-            
-            // Re-calculate terminal output up to prevStep
+
             let newTerminalOutput = '';
             for (let i = 0; i <= prevStep; i++) {
                 newTerminalOutput += (state.commandHistory[i].output || '');
@@ -252,11 +294,12 @@ function reducer(state: VisualizerState, action: VisualizerAction): VisualizerSt
 
             if (prevStep < 0) {
                 resetParserIds();
-                return { ...state, structures: [], currentStep: -1, terminalOutput: '' };
+                return { ...state, structures: [], localVars: [], currentStep: -1, terminalOutput: '' };
             }
             return {
                 ...state,
                 structures: replayToStep(state.commandHistory, prevStep),
+                localVars: replayLocalVarsToStep(state.commandHistory, prevStep),
                 currentStep: prevStep,
                 terminalOutput: newTerminalOutput,
             };
@@ -271,7 +314,8 @@ function reducer(state: VisualizerState, action: VisualizerAction): VisualizerSt
             return {
                 ...initialState,
                 commandHistory: state.commandHistory,
-                stdin: state.stdin, // Keep stdin
+                stdin: state.stdin,
+                localVars: [],
             };
         case 'SET_RUNNING':
             return { ...state, isRunning: action.isRunning };
@@ -283,6 +327,8 @@ function reducer(state: VisualizerState, action: VisualizerAction): VisualizerSt
             return { ...state, stdout: action.stdout };
         case 'SET_STDIN':
             return { ...state, stdin: action.stdin };
+        case 'SET_LOCAL_VARS':
+            return { ...state, localVars: action.localVars };
         default:
             return state;
     }

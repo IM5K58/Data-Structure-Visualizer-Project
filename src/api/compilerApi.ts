@@ -42,7 +42,7 @@ export async function compileCode(code: string, stdin: string = ''): Promise<Com
         },
         body: JSON.stringify({ code, stdin }),
         // Set a reasonable timeout (e.g., 15s) for the fetch request
-        signal: AbortSignal.timeout(15000)
+        signal: AbortSignal.timeout(60000)
     });
 
     if (!response.ok) {

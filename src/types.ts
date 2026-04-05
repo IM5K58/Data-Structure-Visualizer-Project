@@ -1,3 +1,11 @@
+// ===== Local Variables =====
+export interface LocalVar {
+    name: string;
+    type: string;
+    value: string;
+    changed?: boolean; // true if changed since previous step
+}
+
 // ===== Command Types =====
 export type CommandType =
     | 'PUSH'
@@ -9,6 +17,7 @@ export type CommandType =
     | 'SET_POINTER'
     | 'DELETE_NODE'
     | 'SET_LABEL'
+    | 'LOCAL_VAR_UPDATE'
     | 'ERROR'
     | 'UNKNOWN';
 
@@ -89,7 +98,8 @@ export interface VisualizerState {
     error: string | null;
     stdout: string; // Total output from backend
     terminalOutput: string; // Synchronized output shown in terminal
-    stdin: string; 
+    stdin: string;
+    localVars: LocalVar[]; // Current local variable snapshot
 }
 
 export type VisualizerAction =
@@ -102,4 +112,5 @@ export type VisualizerAction =
     | { type: 'SET_ERROR'; error: string | null }
     | { type: 'SET_STDOUT'; stdout: string }
     | { type: 'SET_STDIN'; stdin: string }
-    | { type: 'LOAD_COMMANDS'; commands: Command[] };
+    | { type: 'LOAD_COMMANDS'; commands: Command[] }
+    | { type: 'SET_LOCAL_VARS'; localVars: LocalVar[] };

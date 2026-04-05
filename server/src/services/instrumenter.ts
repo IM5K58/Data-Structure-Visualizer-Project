@@ -16,7 +16,7 @@ interface StructDef {
 const STL_CONTAINER_HINTS: Record<string, 'stack' | 'queue'> = {
     'queue': 'queue',
     'stack': 'stack',
-    'priority_queue': 'stack',
+    'priority_queue': 'queue',
     'deque': 'queue',
 };
 
@@ -487,10 +487,13 @@ export function parseStructs(code: string): StructDef[] {
             if (!trimmed || trimmed.includes('(') || trimmed.includes('~')) continue;
 
             // Strip default initializers: "int top = -1" → "int top", "Node *a = nullptr, *b = nullptr" → "Node *a, *b"
-            const stripped = trimmed.replace(/\s*=\s*[^,;]+/g, '');
+            const stripped = trimmed
+                .replace(/\s*=\s*[^,;]+/g, '')
+                .replace(/^(?:const|static|volatile|mutable|inline|explicit)\s+/g, '') // strip qualifiers
+                .trim();
 
             // Multi-variable declaration: "int a, b, c;" or "Node* left, *right;"
-            const multiVarMatch = stripped.match(/^(\w+(?:<[^>]+>)?)\s+([\w\s*,\[\]]+)$/);
+            const multiVarMatch = stripped.match(/^(?:(?:unsigned|signed|long|short)\s+)?(\w+(?:<[^>]+>)?)\s+([\w\s*,\[\]]+)$/);
             if (multiVarMatch) {
                 const type = multiVarMatch[1];
                 const vars = multiVarMatch[2].split(',');
@@ -508,8 +511,8 @@ export function parseStructs(code: string): StructDef[] {
                 continue;
             }
 
-            // Single field with optional array: "int data[100]"
-            const fieldMatch = stripped.match(/^(\w+(?:<[^>]+>)?)\s*(\*?)\s*(\w+)(\s*\[.*\])?$/);
+            // Single field with optional array: "int data[100]", "unsigned long count"
+            const fieldMatch = stripped.match(/^(?:(?:unsigned|signed|long|short)\s+)?(\w+(?:<[^>]+>)?)\s*(\*?)\s*(\w+)(\s*\[.*\])?$/);
             if (fieldMatch) {
                 fields.push({
                     name: fieldMatch[3],
@@ -584,9 +587,10 @@ function findStructForVar(varName: string, varTypes: Map<string, string>, struct
 
 function getTraceSetFn(type?: string): string {
     if (!type) return 'set_field_int';
-    const t = type.toLowerCase();
-    if (t === 'double' || t === 'float') return 'set_field_double';
+    const t = type.toLowerCase().replace(/^(unsigned|signed|const|volatile)\s+/g, '').trim();
+    if (t === 'double' || t === 'float' || t === 'long double') return 'set_field_double';
     if (t === 'string' || t === 'char' || t === 'elem' || t === 'std::string') return 'set_field_string';
+    // int, long, short, unsigned, bool 등 모두 int로 처리
     return 'set_field_int';
 }
 

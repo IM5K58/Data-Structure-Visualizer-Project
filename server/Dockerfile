@@ -14,7 +14,7 @@ RUN npm run build
 FROM node:20-slim
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends g++ && \
+    apt-get install -y --no-install-recommends g++ gdb && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -27,6 +27,8 @@ COPY sandbox/ ./sandbox/
 
 ENV PORT=3001
 ENV GPP_PATH=/usr/bin/g++
+ENV GDB_PATH=/usr/bin/gdb
+ENV USE_GDB=true
 
 EXPOSE 3001
 

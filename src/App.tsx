@@ -4,6 +4,7 @@ import Controls from './components/Controls';
 import Visualizer from './components/Visualizer';
 import HowToUse from './components/HowToUse';
 import Terminal from './components/Terminal';
+import LocalVarsPanel from './components/LocalVarsPanel';
 import { useVisualizer } from './hooks/useVisualizer';
 import { AnimatePresence } from 'framer-motion';
 
@@ -222,7 +223,7 @@ function App() {
             </div>
           </div>
 
-          <div className="flex-1 p-4 overflow-y-auto min-h-0 bg-bg-secondary/20">
+          <div className="flex-1 p-4 overflow-y-auto min-h-0 bg-bg-secondary/20 flex flex-col gap-4">
             <Controls
               onRun={handleRun}
               onStop={stopAutoRun}
@@ -236,6 +237,9 @@ function App() {
               isLoading={state.isLoading}
               error={state.error}
             />
+            {state.localVars.length > 0 && (
+              <LocalVarsPanel localVars={state.localVars} />
+            )}
           </div>
         </aside>
       </main>

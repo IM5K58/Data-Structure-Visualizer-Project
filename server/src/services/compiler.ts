@@ -5,6 +5,13 @@ import { randomUUID } from 'crypto';
 import { tmpdir } from 'os';
 import type { PistonExecuteResponse } from '../types/index.js';
 
+export interface CompileWithDebugResult {
+    success: boolean;
+    binaryPath: string;
+    jobDir: string;
+    stderr: string;
+}
+
 const GPP_PATH = process.env.GPP_PATH || (process.platform === 'win32' ? 'C:\\msys64\\ucrt64\\bin\\g++.exe' : '/usr/bin/g++');
 const PISTON_URL = process.env.PISTON_URL || '';
 const SANDBOX_DIR = join(process.cwd(), 'sandbox');
@@ -36,6 +43,34 @@ export async function initializePCH(): Promise<void> {
     } catch (e) {
         console.warn('  ⚠ PCH init error (skipped):', e);
     }
+}
+
+/**
+ * GDB용 디버그 심볼이 포함된 바이너리를 컴파일합니다.
+ * jobDir와 binaryPath를 반환하므로 호출자가 정리해야 합니다.
+ */
+export async function compileWithDebug(code: string): Promise<CompileWithDebugResult> {
+    const jobId = randomUUID();
+    const jobDir = join(getTempBase(), `vierasion-gdb-${jobId}`);
+    const srcFile = join(jobDir, 'main.cpp').replace(/\\/g, '/');
+    const outFile = join(jobDir, process.platform === 'win32' ? 'main.exe' : 'main').replace(/\\/g, '/');
+
+    await mkdir(jobDir, { recursive: true });
+    await writeFile(srcFile, code, 'utf-8');
+
+    const result = await runProcess(
+        GPP_PATH,
+        [srcFile, '-o', outFile, '-g', '-O0', '-std=c++17', '-pipe'],
+        jobDir,
+        15000,
+    );
+
+    return {
+        success: result.code === 0,
+        binaryPath: outFile,
+        jobDir,
+        stderr: result.stderr,
+    };
 }
 
 /**
@@ -114,9 +149,15 @@ function runProcess(
             const msysBin = 'C:\\msys64\\ucrt64\\bin';
             env.PATH = `${msysBin};${env.PATH}`;
         }
-        const proc = spawn(command, args, { cwd, timeout, env });
+        // spawn의 timeout 옵션은 Windows에서 실제로 프로세스를 종료하지 않으므로 직접 구현
+        const proc = spawn(command, args, { cwd, env });
         let stdout = '';
         let stderr = '';
+
+        const timer = setTimeout(() => {
+            try { proc.kill('SIGTERM'); } catch { /* ignore */ }
+            setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* ignore */ } }, 500);
+        }, timeout);
 
         if (stdin) {
             proc.stdin.write(stdin);
@@ -127,10 +168,12 @@ function runProcess(
         proc.stderr.on('data', (data) => { stderr += data.toString(); });
 
         proc.on('close', (code, signal) => {
+            clearTimeout(timer);
             resolve({ stdout, stderr, code: code ?? 1, signal: signal?.toString() ?? null });
         });
 
         proc.on('error', (err) => {
+            clearTimeout(timer);
             resolve({ stdout, stderr: err.message, code: 1, signal: null });
         });
     });

@@ -8,31 +8,19 @@ import type { TraceStep } from '../api/compilerApi';
 export function mapTraceToCommands(steps: TraceStep[]): Command[] {
     const commands: Command[] = [];
     const varToAddr = new Map<string, string>();
+    // varToTarget is only used for stack/queue distinction in instrumenter mode (PUSH/POP)
     const varToTarget = new Map<string, TargetType>();
-    const addrToTarget = new Map<string, TargetType>();
-
-    /** Resolve target type and name for a node address */
-    function resolveNodeTarget(addr: string | undefined, varName: string | undefined): { target: TargetType; targetName: string } {
-        if (addr && addrToTarget.get(addr) === 'tree') return { target: 'tree', targetName: 'Tree' };
-        if (varName && varToTarget.get(varName) === 'tree') return { target: 'tree', targetName: 'Tree' };
-        if (addr && addrToTarget.get(addr) === 'circular') return { target: 'circular', targetName: 'Circular' };
-        if (varName && varToTarget.get(varName) === 'circular') return { target: 'circular', targetName: 'Circular' };
-        return { target: 'memory', targetName: 'Heap' };
-    }
 
     for (const step of steps) {
         const raw = step.raw || `Step ${step.step} at line ${step.line}`;
 
         switch (step.type) {
             case 'ALLOC': {
-                // ALLOC gives us the mapping between the variable name and its new memory address
                 if (step.var && step.addr) {
                     varToAddr.set(step.var, step.addr);
+                    // Only track stack/queue hints for PUSH/POP handling (instrumenter mode)
                     if (step.hint === 'stack') varToTarget.set(step.var, 'stack');
                     else if (step.hint === 'queue') varToTarget.set(step.var, 'queue');
-                    else if (step.hint === 'tree') varToTarget.set(step.var, 'tree');
-                    else if (step.hint === 'circular') varToTarget.set(step.var, 'circular');
-                    else varToTarget.set(step.var, 'memory');
                 }
 
                 // Stack/Queue items are added via PUSH/ENQUEUE commands,
@@ -41,18 +29,13 @@ export function mapTraceToCommands(steps: TraceStep[]): Command[] {
                     break;
                 }
 
-                // Track address→target mapping for tree/circular nodes
-                const isTree = step.hint === 'tree';
-                const isCircular = step.hint === 'circular';
-                if (step.addr && isTree) addrToTarget.set(step.addr, 'tree');
-                if (step.addr && isCircular) addrToTarget.set(step.addr, 'circular');
-                const target: TargetType = isTree ? 'tree' : isCircular ? 'circular' : 'memory';
-                const targetName = isTree ? 'Tree' : isCircular ? 'Circular' : 'Heap';
-
+                // All pointer-based nodes start as 'memory'.
+                // analyzeAndReclassify() will determine the real type (tree/circular/linked list)
+                // from the actual runtime pointer graph topology.
                 commands.push({
                     type: 'ALLOCATE_NODE',
-                    target,
-                    targetName,
+                    target: 'memory',
+                    targetName: 'Heap',
                     nodeId: step.addr,
                     structType: step.struct,
                     label: step.var,
@@ -68,11 +51,10 @@ export function mapTraceToCommands(steps: TraceStep[]): Command[] {
                 }
 
                 if (nodeId) {
-                    const { target, targetName } = resolveNodeTarget(nodeId, step.var);
                     commands.push({
                         type: 'DELETE_NODE',
-                        target,
-                        targetName,
+                        target: 'memory',
+                        targetName: 'Heap',
                         nodeId,
                         raw,
                     });
@@ -86,11 +68,10 @@ export function mapTraceToCommands(steps: TraceStep[]): Command[] {
                     : (step.var ? varToAddr.get(step.var) : undefined);
 
                 if (nodeId) {
-                    const { target, targetName } = resolveNodeTarget(nodeId, step.var);
                     commands.push({
                         type: 'SET_FIELD',
-                        target,
-                        targetName,
+                        target: 'memory',
+                        targetName: 'Heap',
                         nodeId,
                         property: step.field,
                         value: step.value,
@@ -108,11 +89,10 @@ export function mapTraceToCommands(steps: TraceStep[]): Command[] {
                     } else {
                         varToAddr.delete(step.field);
                     }
-                    const { target, targetName } = resolveNodeTarget(step.target, step.field);
                     commands.push({
                         type: 'SET_LABEL',
-                        target,
-                        targetName,
+                        target: 'memory',
+                        targetName: 'Heap',
                         nodeId: step.target || undefined,
                         label: step.field,
                         raw,
@@ -124,13 +104,11 @@ export function mapTraceToCommands(steps: TraceStep[]): Command[] {
                         : (step.var ? varToAddr.get(step.var) : undefined);
 
                     if (nodeId) {
-                        const { target, targetName } = resolveNodeTarget(nodeId, step.var);
-                        // In C++, NULL pointer is 0 (or some default value), we map '0' to null
                         const isNull = !step.target || step.target === '0';
                         commands.push({
                             type: 'SET_POINTER',
-                            target,
-                            targetName,
+                            target: 'memory',
+                            targetName: 'Heap',
                             nodeId,
                             property: step.field,
                             pointerTo: isNull ? null : step.target,
@@ -170,6 +148,20 @@ export function mapTraceToCommands(steps: TraceStep[]): Command[] {
                     type: cmdType,
                     target,
                     targetName: step.var || 'default',
+                    raw,
+                });
+                break;
+            }
+
+            case 'LOCAL_VAR': {
+                // Primitive local variable changed — used by LocalVarsPanel
+                commands.push({
+                    type: 'LOCAL_VAR_UPDATE',
+                    target: 'memory',
+                    targetName: 'locals',
+                    label: step.var,        // variable name
+                    value: step.value,      // new value (as string from GDB)
+                    property: step.target as string, // C++ type (reused field)
                     raw,
                 });
                 break;
@@ -218,13 +210,13 @@ function analyzeAndReclassify(commands: Command[]): Command[] {
     const nodeStructTypes = new Map<string, string>();
 
     for (const cmd of commands) {
-        if (cmd.type === 'ALLOCATE_NODE' && (cmd.target === 'memory' || cmd.target === 'circular') && cmd.nodeId) {
+        if (cmd.type === 'ALLOCATE_NODE' && (cmd.target === 'memory') && cmd.nodeId) {
             memoryNodeIds.add(cmd.nodeId);
             outEdges.set(cmd.nodeId, new Set());
             inDegree.set(cmd.nodeId, 0);
             if (cmd.structType) nodeStructTypes.set(cmd.nodeId, cmd.structType);
         }
-        if (cmd.type === 'DELETE_NODE' && (cmd.target === 'memory' || cmd.target === 'circular') && cmd.nodeId) {
+        if (cmd.type === 'DELETE_NODE' && (cmd.target === 'memory') && cmd.nodeId) {
             memoryNodeIds.delete(cmd.nodeId);
         }
     }
@@ -236,7 +228,7 @@ function analyzeAndReclassify(commands: Command[]): Command[] {
     // Track per-field last assignment to avoid stale edges from pointer reassignments.
     const fieldEdges = new Map<string, Map<string, string>>();
     for (const cmd of commands) {
-        if (cmd.type === 'SET_POINTER' && (cmd.target === 'memory' || cmd.target === 'circular') && cmd.nodeId && cmd.property) {
+        if (cmd.type === 'SET_POINTER' && (cmd.target === 'memory') && cmd.nodeId && cmd.property) {
             if (!fieldEdges.has(cmd.nodeId)) fieldEdges.set(cmd.nodeId, new Map());
             fieldEdges.get(cmd.nodeId)!.set(cmd.property, cmd.pointerTo ?? '');
         }

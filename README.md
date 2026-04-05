@@ -2,7 +2,7 @@
 
 # Data Structure Visualizer
 
-A web application that visualizes C++ data structures with real-time animations. It compiles and executes **real C++ code** via a backend g++ compiler, traces actual memory operations at runtime, and renders step-by-step animated visualizations.
+A web application that visualizes C++ data structures with real-time animations. It compiles and executes **real C++ code** via a backend g++ compiler, traces actual memory operations at runtime using **GDB MI**, and renders step-by-step animated visualizations.
 
 ### [Live Demo](https://data-structure-visualizer-project.vercel.app/)
 
@@ -18,28 +18,43 @@ A web application that visualizes C++ data structures with real-time animations.
 
 ## How It Works
 
+### Primary Path: GDB MI Mode (default)
+
+```
+C++ Code  -->  g++ Compile  -->  GDB MI Session  -->  Line-by-line Snapshots  -->  gdbMapper  -->  TraceStep[]  -->  Visualization
+               (-g -O0)         (--interpreter=mi2)   (locals + struct fields)    (ALLOC/SET_PTR/             (React + Framer Motion)
+                                                                                    SET_FIELD/LOCAL_VAR)
+```
+
+1. User writes C++ code with custom structs / pointers
+2. Backend compiles code with **debug symbols** (`g++ -g -O0`)
+3. **GDB** runs the binary line-by-line in MI mode, capturing local variables and struct field values at every step
+4. `gdbMapper` converts raw GDB snapshots into `TraceStep[]` events (ALLOC, SET_PTR, SET_FIELD, LOCAL_VAR)
+5. **Runtime pattern analysis** builds a pointer graph and detects data structure types by analyzing actual graph topology (out-degree, cycles, depth)
+6. Frontend replays commands as animated visualizations
+
+### Fallback Path: Instrumenter Mode (`USE_GDB=false` or GDB not installed)
+
 ```
 C++ Code  -->  AI Analysis  -->  Instrumenter  -->  g++ Compile  -->  Execute  -->  Trace Output  -->  Runtime Analysis  -->  Visualization
                (Groq LLM)        (inject trace      (real binary)     (real run)    (__TRACE__ JSON)   (graph topology)      (React + Framer Motion)
                struct hints       calls)
 ```
 
-1. User writes C++ code with custom structs / pointers
-2. **Groq AI** (optional) pre-analyzes struct definitions and provides classification hints
-3. Backend **instrumenter** injects trace calls (`__vt::alloc`, `__vt::set_ptr`, etc.) using AI hints when available
-4. Code is compiled and executed with **g++** (C++17)
-5. Runtime trace output is parsed into step-by-step commands
-6. **Runtime pattern analysis** builds a pointer graph and detects data structure types by analyzing actual graph topology (out-degree, cycles, depth)
-7. Frontend replays commands as animated visualizations
+1. **Groq AI** (optional) pre-analyzes struct definitions and provides classification hints
+2. Backend **instrumenter** injects trace calls (`__vt::alloc`, `__vt::set_ptr`, etc.) using AI hints
+3. Code is compiled and executed with **g++** (C++17)
+4. Runtime trace output is parsed into step-by-step commands
 
 ---
 
 ## Key Features
 
 - **Real C++ Execution**: Compiles and runs actual C++ code via g++ backend. No simulation or pseudo-code parsing.
-- **AI-Assisted Classification**: Optional Groq AI (free tier) pre-analyzes struct definitions to handle ambiguous field names and non-standard patterns. Falls back to regex when unavailable.
+- **GDB-Powered Tracing**: Uses GDB Machine Interface (MI) to step through code line by line and capture exact memory state — no source code transformation needed.
+- **AI-Assisted Classification** (fallback mode): Optional Groq AI (free tier) pre-analyzes struct definitions to handle ambiguous field names and non-standard patterns.
 - **Smart Auto-Detection**: Three-layer detection system:
-  - **AI analysis**: Groq LLM classifies struct types before instrumentation (if `GROQ_API_KEY` is set)
+  - **AI analysis**: Groq LLM classifies struct types before instrumentation (if `GROQ_API_KEY` is set, fallback mode only)
   - **Static analysis**: Method names (`push`/`pop` = Stack) and self-type pointer counts (2+ = Tree, 1 = Linked List)
   - **Runtime analysis**: Builds actual pointer graph from execution traces and reclassifies based on graph topology (branching, cycles, depth)
 - **Memory Graph Visualization**: Traces pointers (`->`), allocations (`new`), and deallocations (`delete`) to draw memory relationships.
@@ -66,15 +81,15 @@ C++ Code  -->  AI Analysis  -->  Instrumenter  -->  g++ Compile  -->  Execute  -
 ### Smart Detection Pipeline
 
 ```
-AI Hint (pre-compile, optional)     Static Hint (compile-time)          Runtime Analysis (post-execution)
-  Groq LLM classifies structs   →   push/pop methods → Stack            (already classified)
-  (confidence ≥ 0.7 to apply)       enqueue/dequeue  → Queue            (already classified)
-  falls back to static if null       2+ self-pointers → Tree hint        → verify: branching + acyclic + depth > 1 → Tree
-                                     1 self-pointer   → Node hint        → verify: linear chain → Linked List
-                                     no hint          → Memory           → cycle detected → Circular Linked List
+Static Hint (compile-time)          Runtime Analysis (post-execution)
+push/pop methods → Stack            (already classified)
+enqueue/dequeue  → Queue            (already classified)
+2+ self-pointers → Tree hint    →   verify: branching + acyclic + depth > 1 → Tree
+1 self-pointer   → Node hint    →   verify: linear chain → Linked List
+no hint          → Memory       →   cycle detected → Circular Linked List
 ```
 
-**Field names don't matter**: `left/right`, `a/b`, `child1/child2`, `ptr1/ptr2` — the system detects structure from actual runtime pointer topology. For truly ambiguous cases (e.g. non-standard field names like `p1`/`p2`), the AI layer resolves the ambiguity.
+**Field names don't matter**: `left/right`, `a/b`, `child1/child2`, `ptr1/ptr2` — the system detects structure from actual runtime pointer topology.
 
 **Supported C++ patterns**: `struct`, `class`, `private`/`public`/`protected`, `friend class`, constructors with initializer lists, `const`/`static` qualifiers, array fields, multi-variable declarations, `delete[]`.
 
@@ -235,6 +250,9 @@ int main() {
 - **Node.js** 18+
 - **npm** 9+
 - **g++** (MSYS2 on Windows, or system g++ on Linux/Mac)
+- **GDB** (MSYS2 on Windows: `pacman -S mingw-w64-ucrt-x86_64-gdb`, Linux/Mac: `apt install gdb` / `brew install gdb`)
+
+> GDB is required for the default execution mode. If GDB is not installed, the server automatically falls back to instrumenter mode.
 
 ### Installation & Setup
 
@@ -258,8 +276,10 @@ Open `http://localhost:5173` in your browser.
 | `VITE_COMPILER_API_URL` | `http://localhost:3001` | Backend API URL (frontend) |
 | `PORT` | `3001` | Server port (backend) |
 | `GPP_PATH` | Auto-detected | Path to g++ compiler |
+| `GDB_PATH` | Auto-detected | Path to GDB debugger |
+| `USE_GDB` | `true` | Set to `false` to force instrumenter mode |
 | `FRONTEND_URL` | — | Allowed CORS origin for production |
-| `GROQ_API_KEY` | — | Groq API key for AI struct classification (optional, free tier) |
+| `GROQ_API_KEY` | — | Groq API key for AI struct classification (optional, fallback mode only) |
 
 ---
 
@@ -275,8 +295,10 @@ Open `http://localhost:5173` in your browser.
 
 1. Connect GitHub repo to [Render](https://render.com)
 2. Set root directory to `server`, runtime to Docker
-3. Set env vars: `GPP_PATH=/usr/bin/g++`, `FRONTEND_URL=https://your-app.vercel.app`, `GROQ_API_KEY=gsk_...` (optional)
+3. Set env vars: `GPP_PATH=/usr/bin/g++`, `USE_GDB=false` (Render does not allow ptrace), `FRONTEND_URL=https://your-app.vercel.app`, `GROQ_API_KEY=gsk_...` (optional)
 4. Deploy
+
+> On cloud platforms that restrict ptrace (e.g. Render free tier), set `USE_GDB=false` to use instrumenter mode.
 
 ---
 
@@ -289,7 +311,7 @@ src/
 ├── api/
 │   └── compilerApi.ts        # Frontend -> Backend API client
 ├── engine/
-│   └── stepMapper.ts         # Trace -> Commands + runtime pattern analysis
+│   └── stepMapper.ts         # TraceStep[] -> Commands + runtime pattern analysis
 ├── hooks/
 │   └── useVisualizer.ts      # State management (useReducer)
 ├── utils/
@@ -297,7 +319,7 @@ src/
 └── components/
     ├── CodeInput.tsx          # Monaco C++ editor with autocomplete
     ├── Controls.tsx           # Execution controls & speed slider
-    ├── Terminal.tsx            # Output / Input / Command Log tabs
+    ├── Terminal.tsx           # Output / Input / Command Log tabs
     ├── Visualizer.tsx         # Routes structures to visualization components
     └── DataStructures/
         ├── StackPlate.tsx     # Stack: vertical plate stacking
@@ -310,13 +332,15 @@ server/
 ├── Dockerfile                # Docker image for deployment (Node.js + g++)
 ├── src/
 │   ├── index.ts              # Express server with CORS
-│   ├── routes/compile.ts     # POST /api/compile endpoint
+│   ├── routes/compile.ts     # POST /api/compile endpoint (GDB or instrumenter)
 │   └── services/
-│       ├── compiler.ts       # g++ compilation & execution (PCH optimized)
-│       ├── instrumenter.ts   # C++ code instrumentation & structural detection
-│       └── codeAnalyzer.ts   # Groq AI struct classifier (optional)
+│       ├── compiler.ts       # g++ compilation (debug build + standard build)
+│       ├── gdbDriver.ts      # GDB MI driver: spawns GDB, steps line-by-line, captures snapshots
+│       ├── gdbMapper.ts      # Converts GDB snapshots → TraceStep[] events
+│       ├── instrumenter.ts   # C++ code instrumentation (fallback mode)
+│       └── codeAnalyzer.ts   # Groq AI struct classifier (fallback mode, optional)
 └── sandbox/
-    └── __tracer.h            # C++ tracing header (injected at compile time)
+    └── __tracer.h            # C++ tracing header (injected in instrumenter mode)
 ```
 
 ---
@@ -353,6 +377,7 @@ This project is built with the following open-source libraries:
 | Tool | License | Description |
 |------|---------|-------------|
 | [g++ (GCC)](https://gcc.gnu.org/) | GPL-3.0 | C++ compiler (runtime dependency, not bundled) |
+| [GDB](https://www.sourceware.org/gdb/) | GPL-3.0 | GNU Debugger for line-by-line tracing (runtime dependency, not bundled) |
 
 ---
 
