@@ -71,29 +71,42 @@ C++ 코드  -->  AI 분석  -->  계측기(Instrumenter)  -->  g++ 컴파일  --
 
 | 자료구조 | 색상 | 감지 방식 | 시각화 |
 |----------|------|-----------|--------|
-| **Stack** | Purple | `push()` + `pop()` 메서드 | 수직 플레이트 적층, TOP 표시 |
-| **Queue** | Cyan | `enqueue()` + `dequeue()` 메서드 | 수평 컨베이어 벨트, FRONT/BACK 라벨 |
-| **Tree (BST / N-ary)** | Green | 자기 타입 포인터 2+개 또는 런타임 분기 패턴 | 계층 버킷 레이아웃, ROOT 뱃지, 드래그 패닝 |
+| **Stack** | Purple | `push()` + `pop()` 메서드, 또는 `std::stack`/`vector` | 수직 플레이트 적층, TOP 표시 |
+| **Queue** | Cyan | `enqueue()` + `dequeue()` 메서드, 또는 `std::queue`/`deque`/`priority_queue` | 수평 컨베이어 벨트, FRONT/BACK 라벨 |
+| **Tree (BST / N-ary)** | Green | 자기 타입 포인터 2+개 또는 런타임 분기 패턴 (parent 포인터 허용) | 계층 버킷 레이아웃, ROOT 뱃지, 드래그 패닝 |
 | **Linked List** | Purple | 자기 타입 포인터 1개, 선형 체인 | 화살표 연결 그래프 뷰 |
+| **이중 연결 리스트(Doubly LL)** | Cyan / Amber | `next`/`prev` 양방향 페어를 가진 선형 체인 | 수평 체인 — solid cyan `next` + dashed amber `prev` |
 | **원형 연결 리스트** | Amber | 런타임 사이클 감지 (출차수 1 + 루프) | 다각형 배치, HEAD 뱃지, amber 점선 cycle-back 엣지 |
+| **일반 그래프(General Graph)** | Rose | back-edge 제거 후에도 분기+사이클이 남는 경우 | 모든 엣지가 표시되는 그래프 뷰 |
 | **Memory (Heap)** | Purple | 포인터 구조 폴백 | 메모리 주소 기반 그래프 뷰 |
 
 ### 스마트 감지 파이프라인
 
 ```
-정적 힌트 (컴파일 타임)              런타임 분석 (실행 후)
-push/pop 메서드  → Stack            (이미 분류됨)
-enqueue/dequeue  → Queue            (이미 분류됨)
-자기포인터 2+개  → Tree 힌트    →   검증: 분기 + 비순환 + depth > 1 → Tree
-자기포인터 1개   → Node 힌트    →   검증: 선형 체인 → Linked List
-힌트 없음        → Memory       →   사이클 감지 → 원형 연결 리스트
+정적 힌트 (컴파일 타임)                런타임 분석 (실행 후, GDB 모드)
+push/pop 메서드   → Stack             (이미 분류됨)
+enqueue/dequeue   → Queue             (이미 분류됨)
+std::stack/vector              → Stack (계측기 + GDB 양쪽)
+std::queue/deque/priority_queue → Queue
+                                       ┌─ 한 필드의 양방향 페어를 제거 ─┐
+                                       │  (= back-edge / prev / parent) │
+                                       └────────────────┬──────────────┘
+                                                        ▼
+                                  primary 그래프 사이클 + 분기              → Graph
+                                  primary 그래프 사이클 + 출차수 ≤ 1        → 원형 연결 리스트
+                                  primary 그래프 비순환 + 분기              → Tree
+                                  primary 그래프 비순환 + back-edge 존재    → Doubly Linked List
+                                  primary 그래프 비순환 + 단순 체인         → Linked List
 ```
 
-**필드명 무관**: `left/right`, `a/b`, `child1/child2`, `ptr1/ptr2` — 실제 런타임 포인터 토폴로지에서 구조를 감지합니다.
+**필드명 무관**: `left/right`, `a/b`, `child1/child2`, `ptr1/ptr2`, `next/prev`, `child/parent` — 실제 런타임 포인터 토폴로지에서 구조를 감지합니다.
 
 **지원 C++ 패턴**: `struct`, `class`, `private`/`public`/`protected`, `friend class`, 생성자 초기화 리스트, `const`/`static` 한정자, 배열 필드, 다중 변수 선언, `delete[]`.
 
 **지원 값 타입**: `int`, `double`, `string`, `bool`, `char`
+
+**지원 STL 컨테이너** (GDB / 계측기 양쪽 모드):
+`std::stack`, `std::queue`, `std::priority_queue`, `std::vector`, `std::deque`. GDB 모드는 매 스냅샷마다 `.size()` / `.top()` / `.back()`을 평가해 PUSH / POP 커맨드를 합성하고, 계측기 모드는 `push`/`push_back`/`push_front`/`enqueue` 및 `pop`/`pop_back`/`pop_front`/`dequeue` 호출을 트레이스 이벤트로 재작성합니다.
 
 ---
 
@@ -241,6 +254,48 @@ int main() {
 }
 ```
 
+### 이중 연결 리스트 (Doubly Linked List)
+
+```cpp
+#include <iostream>
+using namespace std;
+
+struct Node {
+    int data;
+    Node* next;
+    Node* prev;
+    Node(int v) : data(v), next(nullptr), prev(nullptr) {}
+};
+
+int main() {
+    Node* a = new Node(1);
+    Node* b = new Node(2);
+    Node* c = new Node(3);
+    a->next = b; b->prev = a;
+    b->next = c; c->prev = b;
+    return 0;
+}
+```
+
+### STL Stack / Queue
+
+```cpp
+#include <stack>
+#include <queue>
+using namespace std;
+
+int main() {
+    stack<int> s;
+    s.push(10); s.push(20); s.push(30);
+    s.pop();
+
+    queue<int> q;
+    q.push(1); q.push(2); q.push(3);
+    q.pop();
+    return 0;
+}
+```
+
 ---
 
 ## 시작하기
@@ -280,6 +335,18 @@ npm run dev
 | `USE_GDB` | `true` | `false`로 설정하면 계측기 모드 강제 사용 |
 | `FRONTEND_URL` | — | 프로덕션 CORS 허용 도메인 |
 | `GROQ_API_KEY` | — | Groq AI struct 분류용 API 키 (선택, 폴백 모드 전용) |
+| `RATE_LIMIT_COMPILE` | `20` | IP당 분당 컴파일 요청 수 |
+| `RATE_LIMIT_GENERAL` | `120` | IP당 분당 일반 `/api` 요청 수 |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | 레이트 리밋 윈도(밀리초) |
+| `TRUST_PROXY` | — | 로드밸런서 뒤에 있을 때 실제 클라이언트 IP를 추출하기 위한 Express trust-proxy 값 (`1` 또는 CIDR 리스트) |
+| `RLIMIT_CPU_SEC` | `8` | 프로그램당 CPU 시간 한도(초) — Linux에서 `prlimit`로 적용 |
+| `RLIMIT_AS_BYTES` | `268435456` | 프로그램당 가상 메모리 한도 (기본 256 MiB) |
+| `RLIMIT_STACK_BYTES` | `16777216` | 프로그램당 스택 한도 (기본 16 MiB) |
+| `RLIMIT_FSIZE_BYTES` | `8388608` | 프로그램이 쓸 수 있는 파일 최대 크기 (8 MiB) |
+| `RLIMIT_NOFILE` | `64` | 최대 열린 파일 디스크립터 수 |
+| `RLIMIT_NPROC` | `64` | 최대 사용자 프로세스 수 |
+| `PRLIMIT_PATH` | `/usr/bin/prlimit` | `prlimit` 경로. 미존재 시 경고 후 리소스 제한 비활성화 |
+| `DISABLE_RLIMIT` | — | `true`로 설정하면 prlimit이 있어도 리소스 제한을 끔 |
 
 ---
 
@@ -299,6 +366,22 @@ npm run dev
 4. 배포
 
 > ptrace를 제한하는 클라우드 환경(예: Render 무료 플랜)에서는 `USE_GDB=false`로 설정하여 계측기 모드를 사용하세요.
+
+### 보안 강화 (공개 배포 시 필수)
+
+서버는 HTTP로 전송된 임의의 C++ 코드를 컴파일/실행합니다. 내장된 리소스 리밋(`prlimit`)과 컨테이너 격리 옵션을 함께 적용하세요:
+
+```bash
+docker run \
+  --read-only \
+  --tmpfs /tmp:exec --tmpfs /dev/shm:exec \
+  --memory=512m --cpus=1 --pids-limit=128 \
+  --security-opt=no-new-privileges \
+  --security-opt seccomp=server/seccomp-profile.json \
+  -p 3001:3001 server-image
+```
+
+보수적인 seccomp 프로파일이 `server/seccomp-profile.json`에 포함되어 있습니다. Express 서버 자체도 `/api/compile`에 레이트 리밋(기본 20 req/min/IP)을 적용하며, 위 표의 `RATE_LIMIT_*` 환경변수로 조정할 수 있습니다.
 
 ---
 
@@ -324,19 +407,21 @@ src/
     └── DataStructures/
         ├── StackPlate.tsx     # Stack: 수직 플레이트 적층
         ├── QueueBlock.tsx     # Queue: 수평 컨베이어 벨트
-        ├── GraphView.tsx      # Memory / Linked List: 화살표 그래프
+        ├── GraphView.tsx      # Memory / Linked List / 일반 그래프: 화살표 그래프
         ├── TreeChart.tsx      # Tree: 계층 버킷 레이아웃 (N-ary)
-        └── CircularListView.tsx # 원형 연결 리스트: 다각형 레이아웃
+        ├── CircularListView.tsx # 원형 연결 리스트: 다각형 레이아웃
+        └── DoublyListView.tsx   # 이중 연결 리스트: forward/back 화살표
 
 server/
-├── Dockerfile                # 배포용 Docker 이미지 (Node.js + g++)
+├── Dockerfile                # 배포용 Docker 이미지 (Node.js + g++ + util-linux)
+├── seccomp-profile.json      # `--security-opt seccomp=...` 용 syscall 화이트리스트
 ├── src/
-│   ├── index.ts              # Express 서버 (CORS)
+│   ├── index.ts              # Express 서버 (CORS + 레이트 리밋)
 │   ├── routes/compile.ts     # POST /api/compile 엔드포인트 (GDB 또는 계측기)
 │   └── services/
-│       ├── compiler.ts       # g++ 컴파일 (디버그 빌드 + 일반 빌드)
-│       ├── gdbDriver.ts      # GDB MI 드라이버: GDB 스폰, 라인별 스텝, 스냅샷 캡처
-│       ├── gdbMapper.ts      # GDB 스냅샷 → TraceStep[] 이벤트 변환
+│       ├── compiler.ts       # g++ 컴파일 + Linux용 prlimit 래퍼
+│       ├── gdbDriver.ts      # GDB MI 드라이버: 스폰/라인 스텝/스냅샷 + exec-wrapper rlimit
+│       ├── gdbMapper.ts      # GDB 스냅샷 → TraceStep[] (STL 컨테이너 포함)
 │       ├── instrumenter.ts   # C++ 코드 계측 (폴백 모드)
 │       └── codeAnalyzer.ts   # Groq AI struct 분류기 (폴백 모드, 선택)
 └── sandbox/

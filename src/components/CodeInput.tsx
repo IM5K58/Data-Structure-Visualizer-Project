@@ -1,8 +1,11 @@
-import { useState, useEffect } from 'react';
-import Editor from '@monaco-editor/react';
+import { useState, useEffect, useRef } from 'react';
+import Editor, { type Monaco, type OnMount } from '@monaco-editor/react';
+import type { editor } from 'monaco-editor';
 
 interface Props {
     onCodeChange: (code: string) => void;
+    /** 1-based source line currently being executed; null = none */
+    currentLine?: number | null;
 }
 
 const DEFAULT_CODE = `#include <iostream>
@@ -37,14 +40,45 @@ int main() {
     return 0;
 }`;
 
-export default function CodeInput({ onCodeChange }: Props) {
+export default function CodeInput({ onCodeChange, currentLine }: Props) {
     const [code, setCode] = useState(DEFAULT_CODE);
+    const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
+    const monacoRef = useRef<Monaco | null>(null);
+    const decorationsRef = useRef<editor.IEditorDecorationsCollection | null>(null);
 
     useEffect(() => {
         onCodeChange(code);
     }, [code, onCodeChange]);
 
-    const handleEditorWillMount = (monaco: any) => {
+    // Highlight the current execution line whenever it changes.
+    useEffect(() => {
+        const ed = editorRef.current;
+        const monaco = monacoRef.current;
+        if (!ed || !monaco) return;
+
+        const newDecorations: editor.IModelDeltaDecoration[] = (typeof currentLine === 'number' && currentLine > 0)
+            ? [{
+                range: new monaco.Range(currentLine, 1, currentLine, 1),
+                options: {
+                    isWholeLine: true,
+                    className: 'monaco-current-step-line',
+                    linesDecorationsClassName: 'monaco-current-step-decoration',
+                },
+            }]
+            : [];
+
+        if (!decorationsRef.current) {
+            decorationsRef.current = ed.createDecorationsCollection(newDecorations);
+        } else {
+            decorationsRef.current.set(newDecorations);
+        }
+
+        if (typeof currentLine === 'number' && currentLine > 0) {
+            ed.revealLineInCenterIfOutsideViewport(currentLine);
+        }
+    }, [currentLine]);
+
+    const handleEditorWillMount = (monaco: Monaco) => {
         monaco.editor.defineTheme('vs-visualizer', {
             base: 'vs-dark',
             inherit: true,
@@ -73,6 +107,11 @@ export default function CodeInput({ onCodeChange }: Props) {
         }
     };
 
+    const handleEditorMount: OnMount = (ed, monaco) => {
+        editorRef.current = ed;
+        monacoRef.current = monaco;
+    };
+
     return (
         <div className="w-full h-full rounded-2xl overflow-hidden border border-border bg-bg-primary shadow-2xl relative flex flex-col">
             {/* Toolbar Header */}
@@ -99,6 +138,7 @@ export default function CodeInput({ onCodeChange }: Props) {
                     language="cpp"
                     theme="vs-visualizer"
                     beforeMount={handleEditorWillMount}
+                    onMount={handleEditorMount}
                     value={code}
                     onChange={handleEditorChange}
                     options={{

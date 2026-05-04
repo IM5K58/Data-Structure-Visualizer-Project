@@ -56,3 +56,14 @@ body {
 textarea {
   font-family: var(--font-mono);
 }
+
+/* Monaco — highlight the line of the currently executing trace step. */
+.monaco-current-step-line {
+  background: rgba(0, 229, 255, 0.10);
+  border-left: 2px solid var(--color-accent-cyan);
+}
+.monaco-current-step-decoration {
+  background: var(--color-accent-cyan);
+  width: 3px !important;
+  margin-left: 3px;
+}

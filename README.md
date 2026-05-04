@@ -71,29 +71,46 @@ C++ Code  -->  AI Analysis  -->  Instrumenter  -->  g++ Compile  -->  Execute  -
 
 | Data Structure | Color | Detection Method | Visualization |
 |----------------|-------|------------------|---------------|
-| **Stack** | Purple | `push()` + `pop()` methods | Vertical plate stacking with TOP indicator |
-| **Queue** | Cyan | `enqueue()` + `dequeue()` methods | Horizontal conveyor belt with FRONT/BACK labels |
-| **Tree (BST / N-ary)** | Green | 2+ self-type pointers OR runtime branching pattern | Hierarchical bucket layout with ROOT badge, drag-to-pan |
+| **Stack** | Purple | `push()` + `pop()` methods, or `std::stack`/`vector` | Vertical plate stacking with TOP indicator |
+| **Queue** | Cyan | `enqueue()` + `dequeue()` methods, or `std::queue`/`deque`/`priority_queue` | Horizontal conveyor belt with FRONT/BACK labels |
+| **Tree (BST / N-ary)** | Green | 2+ self-type pointers OR runtime branching pattern (parent pointers tolerated) | Hierarchical bucket layout with ROOT badge, drag-to-pan |
 | **Linked List** | Purple | 1 self-type pointer, linear chain | Graph view with arrow connections |
+| **Doubly Linked List** | Cyan / Amber | Linear chain with bidirectional `next`/`prev` pairs | Horizontal chain — solid cyan `next` arrows + dashed amber `prev` arrows |
 | **Circular Linked List** | Amber | Runtime cycle detection (single outgoing pointer with loop) | Polygon layout with HEAD badge, amber dashed cycle-back edge |
+| **General Graph** | Rose | Branching + cycle that survives back-edge stripping | Graph view with all edges |
 | **Memory (Heap)** | Purple | Fallback for pointer structures | Graph view with memory addresses |
 
 ### Smart Detection Pipeline
 
 ```
-Static Hint (compile-time)          Runtime Analysis (post-execution)
-push/pop methods → Stack            (already classified)
-enqueue/dequeue  → Queue            (already classified)
-2+ self-pointers → Tree hint    →   verify: branching + acyclic + depth > 1 → Tree
-1 self-pointer   → Node hint    →   verify: linear chain → Linked List
-no hint          → Memory       →   cycle detected → Circular Linked List
+Static Hint (compile-time)            Runtime Analysis (post-execution, GDB mode)
+push/pop methods → Stack              (already classified)
+enqueue/dequeue  → Queue              (already classified)
+std::stack/vector              → Stack (instrumenter + GDB modes)
+std::queue/deque/priority_queue → Queue
+                                      ┌─ strip bidirectional pairs from one field ─┐
+                                      │  (the "back-edge" / prev / parent field)   │
+                                      └─────────────────┬──────────────────────────┘
+                                                        ▼
+                                  primary graph cyclic + branching       → Graph
+                                  primary graph cyclic + max-out-deg ≤ 1 → Circular Linked List
+                                  primary graph acyclic + branching      → Tree
+                                  primary graph acyclic + back-edges     → Doubly Linked List
+                                  primary graph acyclic + chain          → Linked List
 ```
 
-**Field names don't matter**: `left/right`, `a/b`, `child1/child2`, `ptr1/ptr2` — the system detects structure from actual runtime pointer topology.
+**Field names don't matter**: `left/right`, `a/b`, `child1/child2`, `ptr1/ptr2`, `next/prev`, `child/parent` — the system detects structure from actual runtime pointer topology.
 
 **Supported C++ patterns**: `struct`, `class`, `private`/`public`/`protected`, `friend class`, constructors with initializer lists, `const`/`static` qualifiers, array fields, multi-variable declarations, `delete[]`.
 
 **Supported Value Types**: `int`, `double`, `string`, `bool`, `char`
+
+**Supported STL Containers** (both GDB and instrumenter modes):
+`std::stack`, `std::queue`, `std::priority_queue`, `std::vector`, `std::deque`. The
+GDB-mode tracer evaluates `.size()` / `.top()` / `.back()` per snapshot and
+synthesises PUSH / POP commands; the instrumenter mode rewrites
+`push`/`push_back`/`push_front`/`enqueue` and `pop`/`pop_back`/`pop_front`/`dequeue`
+calls into trace events.
 
 ---
 
@@ -241,6 +258,48 @@ int main() {
 }
 ```
 
+### Doubly Linked List
+
+```cpp
+#include <iostream>
+using namespace std;
+
+struct Node {
+    int data;
+    Node* next;
+    Node* prev;
+    Node(int v) : data(v), next(nullptr), prev(nullptr) {}
+};
+
+int main() {
+    Node* a = new Node(1);
+    Node* b = new Node(2);
+    Node* c = new Node(3);
+    a->next = b; b->prev = a;
+    b->next = c; c->prev = b;
+    return 0;
+}
+```
+
+### STL Stack / Queue
+
+```cpp
+#include <stack>
+#include <queue>
+using namespace std;
+
+int main() {
+    stack<int> s;
+    s.push(10); s.push(20); s.push(30);
+    s.pop();
+
+    queue<int> q;
+    q.push(1); q.push(2); q.push(3);
+    q.pop();
+    return 0;
+}
+```
+
 ---
 
 ## Getting Started
@@ -280,6 +339,18 @@ Open `http://localhost:5173` in your browser.
 | `USE_GDB` | `true` | Set to `false` to force instrumenter mode |
 | `FRONTEND_URL` | — | Allowed CORS origin for production |
 | `GROQ_API_KEY` | — | Groq API key for AI struct classification (optional, fallback mode only) |
+| `RATE_LIMIT_COMPILE` | `20` | Compile requests per minute per IP |
+| `RATE_LIMIT_GENERAL` | `120` | Other `/api` requests per minute per IP |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | Rate-limit window in milliseconds |
+| `TRUST_PROXY` | — | Express trust-proxy setting (set to `1` or a CIDR list when behind a load balancer so rate limit keys on the real client IP) |
+| `RLIMIT_CPU_SEC` | `8` | Per-program CPU-time cap in seconds (Linux, applied via `prlimit`) |
+| `RLIMIT_AS_BYTES` | `268435456` | Per-program virtual-memory cap (256 MiB default) |
+| `RLIMIT_STACK_BYTES` | `16777216` | Per-program stack cap (16 MiB default) |
+| `RLIMIT_FSIZE_BYTES` | `8388608` | Max file size a program may write (8 MiB) |
+| `RLIMIT_NOFILE` | `64` | Max open file descriptors |
+| `RLIMIT_NPROC` | `64` | Max user processes |
+| `PRLIMIT_PATH` | `/usr/bin/prlimit` | Path to `prlimit`. If missing, resource limits are skipped with a warning |
+| `DISABLE_RLIMIT` | — | Set to `true` to skip resource limiting even when `prlimit` exists |
 
 ---
 
@@ -299,6 +370,25 @@ Open `http://localhost:5173` in your browser.
 4. Deploy
 
 > On cloud platforms that restrict ptrace (e.g. Render free tier), set `USE_GDB=false` to use instrumenter mode.
+
+### Hardening (recommended for any public deployment)
+
+The server compiles and runs arbitrary C++ submitted over HTTP. Always combine
+the built-in resource limits (`prlimit`) with container-level isolation:
+
+```bash
+docker run \
+  --read-only \
+  --tmpfs /tmp:exec --tmpfs /dev/shm:exec \
+  --memory=512m --cpus=1 --pids-limit=128 \
+  --security-opt=no-new-privileges \
+  --security-opt seccomp=server/seccomp-profile.json \
+  -p 3001:3001 server-image
+```
+
+A conservative seccomp profile is included at `server/seccomp-profile.json`. The
+Express server also rate-limits `/api/compile` (default 20 req/min/IP); tune via
+the `RATE_LIMIT_*` env vars above.
 
 ---
 
@@ -324,19 +414,21 @@ src/
     └── DataStructures/
         ├── StackPlate.tsx     # Stack: vertical plate stacking
         ├── QueueBlock.tsx     # Queue: horizontal conveyor belt
-        ├── GraphView.tsx      # Memory / Linked List: graph with arrows
+        ├── GraphView.tsx      # Memory / Linked List / General Graph: graph with arrows
         ├── TreeChart.tsx      # Tree: hierarchical bucket layout (N-ary)
-        └── CircularListView.tsx # Circular Linked List: polygon layout
+        ├── CircularListView.tsx # Circular Linked List: polygon layout
+        └── DoublyListView.tsx   # Doubly Linked List: forward/back arrows
 
 server/
-├── Dockerfile                # Docker image for deployment (Node.js + g++)
+├── Dockerfile                # Docker image for deployment (Node.js + g++ + util-linux)
+├── seccomp-profile.json      # Conservative syscall whitelist for `--security-opt seccomp=...`
 ├── src/
-│   ├── index.ts              # Express server with CORS
+│   ├── index.ts              # Express server with CORS + rate-limit
 │   ├── routes/compile.ts     # POST /api/compile endpoint (GDB or instrumenter)
 │   └── services/
-│       ├── compiler.ts       # g++ compilation (debug build + standard build)
-│       ├── gdbDriver.ts      # GDB MI driver: spawns GDB, steps line-by-line, captures snapshots
-│       ├── gdbMapper.ts      # Converts GDB snapshots → TraceStep[] events
+│       ├── compiler.ts       # g++ compilation + prlimit wrapper (Linux)
+│       ├── gdbDriver.ts      # GDB MI driver: spawns GDB, steps line-by-line, captures snapshots, exec-wrapper rlimit
+│       ├── gdbMapper.ts      # Converts GDB snapshots → TraceStep[] events (incl. STL containers)
 │       ├── instrumenter.ts   # C++ code instrumentation (fallback mode)
 │       └── codeAnalyzer.ts   # Groq AI struct classifier (fallback mode, optional)
 └── sandbox/

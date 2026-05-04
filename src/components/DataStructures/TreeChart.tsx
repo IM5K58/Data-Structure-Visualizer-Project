@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import type { TreeState, MemoryNode } from '../../types';
+import type { NodeHighlight } from '../Visualizer';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface Props {
     data: TreeState;
+    highlight?: NodeHighlight | null;
 }
 
 interface LayoutNode {
@@ -107,7 +109,7 @@ function computeLayout(nodes: MemoryNode[], rootId: string | null): LayoutNode[]
     return Array.from(positioned.values());
 }
 
-export default function TreeChart({ data }: Props) {
+export default function TreeChart({ data, highlight }: Props) {
     const mainRef = useRef<HTMLDivElement>(null);
     const [scale, setScale] = useState(1);
     const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -116,6 +118,15 @@ export default function TreeChart({ data }: Props) {
     const prevNodeIds = useRef<Set<string>>(new Set());
     const [newNodeIds, setNewNodeIds] = useState<Set<string>>(new Set());
     const hasAutocentered = useRef(false);
+
+    // Pulse the most recently changed node + field for ~700ms after a step.
+    const [pulse, setPulse] = useState<{ nodeId: string | null; property: string | null } | null>(null);
+    useEffect(() => {
+        if (!highlight || !highlight.nodeId) return;
+        setPulse({ nodeId: highlight.nodeId, property: highlight.property });
+        const t = setTimeout(() => setPulse(null), 700);
+        return () => clearTimeout(t);
+    }, [highlight]);
 
     // Track new nodes for entry animation
     useEffect(() => {
@@ -324,25 +335,37 @@ export default function TreeChart({ data }: Props) {
                                     />
                                 )}
 
-                                <div className={`flex flex-col items-center transition-shadow duration-500 ${isNew || isRoot ? 'shadow-[0_0_40px_rgba(74,222,128,0.3)]' : ''}`}>
+                                <div
+                                    className={`flex flex-col items-center transition-shadow duration-500 ${
+                                        pulse?.nodeId === node.id
+                                            ? 'ring-2 ring-accent-cyan rounded-lg shadow-[0_0_30px_rgba(0,229,255,0.5)]'
+                                            : isNew || isRoot ? 'shadow-[0_0_40px_rgba(74,222,128,0.3)]' : ''
+                                    }`}
+                                >
                                     <div className="bg-bg-tertiary px-3 py-1 rounded-t-lg border border-border text-[10px] font-bold text-text-secondary w-full text-center tracking-wider z-10">
                                         {node.type}
                                     </div>
                                     <div className="bg-bg-panel border border-t-0 border-border rounded-b-lg shadow-xl shadow-bg-secondary/20 overflow-hidden w-full">
-                                        {Object.entries(node.fields).map(([fname, val]) => (
-                                            <div key={fname} className="flex border-b border-border/40 text-xs text-center">
+                                        {Object.entries(node.fields).map(([fname, val]) => {
+                                            const fieldPulse = pulse?.nodeId === node.id && pulse?.property === fname;
+                                            return (
+                                            <div key={fname} className={`flex border-b border-border/40 text-xs text-center transition-colors duration-500 ${fieldPulse ? 'bg-accent-cyan/20' : ''}`}>
                                                 <div className="w-[45%] p-1.5 border-r border-border/40 text-text-muted bg-black/10 text-[11px] font-mono tracking-tighter truncate">{fname}</div>
                                                 <div className="w-[55%] p-1.5 text-accent-cyan font-bold truncate">{val !== undefined ? String(val) : '?'}</div>
                                             </div>
-                                        ))}
-                                        {Object.entries(node.pointers).map(([pname, targetId]) => (
-                                            <div key={pname} className="flex border-b border-border/40 text-xs bg-green-500/5">
+                                            );
+                                        })}
+                                        {Object.entries(node.pointers).map(([pname, targetId]) => {
+                                            const ptrPulse = pulse?.nodeId === node.id && pulse?.property === pname;
+                                            return (
+                                            <div key={pname} className={`flex border-b border-border/40 text-xs transition-colors duration-500 ${ptrPulse ? 'bg-accent-cyan/25' : 'bg-green-500/5'}`}>
                                                 <div className="w-[45%] p-1.5 border-r border-border/40 text-text-muted text-center bg-black/20 text-[11px] font-mono tracking-tighter truncate">{pname}</div>
                                                 <div className="w-[55%] p-1.5 text-green-400 text-center tracking-tighter truncate opacity-80 font-bold bg-green-500/5">
                                                     {targetId ? `*${(targetId as string).slice(-4)}` : 'null'}
                                                 </div>
                                             </div>
-                                        ))}
+                                            );
+                                        })}
                                         {Object.keys(node.fields).length === 0 && Object.keys(node.pointers).length === 0 && (
                                             <div className="p-4 text-center text-[10px] text-text-muted italic opacity-50 font-mono">Uninitialized</div>
                                         )}

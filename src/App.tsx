@@ -5,11 +5,12 @@ import Visualizer from './components/Visualizer';
 import HowToUse from './components/HowToUse';
 import Terminal from './components/Terminal';
 import LocalVarsPanel from './components/LocalVarsPanel';
+import CallStackPanel from './components/CallStackPanel';
 import { useVisualizer } from './hooks/useVisualizer';
 import { AnimatePresence } from 'framer-motion';
 
 function App() {
-  const { state, loadCode, step, stepBack, run, reset, stopAutoRun, setSpeed, setStdin } = useVisualizer();
+  const { state, loadCode, step, stepBack, run, reset, stopAutoRun, setSpeed, setStdin, currentLine, lastChange } = useVisualizer();
   const [showHelp, setShowHelp] = useState(false);
   const codeRef = useRef('');
 
@@ -171,7 +172,7 @@ function App() {
 
           {/* Visualization Area */}
           <div className="flex-1 overflow-auto relative">
-             <Visualizer structures={state.structures} />
+             <Visualizer structures={state.structures} lastChange={lastChange} />
           </div>
 
           {/* Bottom Terminal Panel */}
@@ -212,7 +213,7 @@ function App() {
 
         <aside ref={rightPanelRef} style={{ width: `${panelWidth}px` }} className="shrink-0 border-l border-border bg-bg-secondary/30 flex flex-col bg-bg-panel/40 backdrop-blur-xl">
           <div style={{ height: `${codeHeight}px` }} className="shrink-0 p-4 flex flex-col">
-            <CodeInput onCodeChange={handleCodeChange} />
+            <CodeInput onCodeChange={handleCodeChange} currentLine={currentLine} />
           </div>
 
           <div onMouseDown={startResizeV} className="h-[5px] cursor-row-resize bg-border hover:bg-accent-cyan/40 active:bg-accent-cyan/60 transition-colors duration-150 shrink-0 relative group">
@@ -237,6 +238,9 @@ function App() {
               isLoading={state.isLoading}
               error={state.error}
             />
+            {state.callStack.length > 0 && (
+              <CallStackPanel frames={state.callStack} />
+            )}
             {state.localVars.length > 0 && (
               <LocalVarsPanel localVars={state.localVars} />
             )}

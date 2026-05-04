@@ -9,6 +9,11 @@ import type {
     MemoryState,
     TreeState,
     CircularState,
+    DoublyState,
+    GraphState,
+    HeapState,
+    HashMapState,
+    UnionFindState,
     LocalVar,
 } from '../types';
 import { nextId, resetParserIds } from '../utils/ids';
@@ -26,6 +31,7 @@ const initialState: VisualizerState = {
     terminalOutput: '',
     stdin: '',
     localVars: [],
+    callStack: [],
 };
 
 function findOrCreateStructure(
@@ -55,6 +61,21 @@ function findOrCreateStructure(
         case 'circular':
             newStructure = { type: 'circular', name: targetName, nodes: [], headId: null };
             break;
+        case 'doubly':
+            newStructure = { type: 'doubly', name: targetName, nodes: [], headId: null };
+            break;
+        case 'graph':
+            newStructure = { type: 'graph', name: targetName, nodes: [] };
+            break;
+        case 'heap':
+            newStructure = { type: 'heap', name: targetName, items: [] };
+            break;
+        case 'hashmap':
+            newStructure = { type: 'hashmap', name: targetName, entries: [] };
+            break;
+        case 'unionfind':
+            newStructure = { type: 'unionfind', name: targetName, parent: {}, ops: [] };
+            break;
     }
     return [...structures, newStructure];
 }
@@ -70,6 +91,13 @@ function executeCommand(
 
         switch (command.type) {
             case 'PUSH': {
+                if (s.type === 'heap') {
+                    const heap = s as HeapState;
+                    return {
+                        ...heap,
+                        items: [...heap.items, { id: nextId(), value: command.value! }],
+                    };
+                }
                 const stack = s as StackState;
                 return {
                     ...stack,
@@ -77,12 +105,75 @@ function executeCommand(
                 };
             }
             case 'POP': {
+                if (s.type === 'heap') {
+                    const heap = s as HeapState;
+                    if (heap.items.length === 0) return heap;
+                    // Heap pop removes the root (index 0). The last element conceptually
+                    // moves to root then sifts down — but we don't have full visibility
+                    // into priority_queue internals, so we just remove the root and let
+                    // the next snapshot fill in the new top via a fresh MAP-like read.
+                    return { ...heap, items: heap.items.slice(1) };
+                }
                 const stack = s as StackState;
                 if (stack.items.length === 0) return stack;
                 return {
                     ...stack,
                     items: stack.items.slice(0, -1),
                 };
+            }
+            case 'MAP_SET': {
+                if (s.type !== 'hashmap') return s;
+                const map = s as HashMapState;
+                const key = command.property ?? '';
+                const value = String(command.value ?? '');
+                const idx = map.entries.findIndex(e => e.key === key);
+                if (idx >= 0) {
+                    const next = map.entries.slice();
+                    next[idx] = { ...next[idx], value };
+                    return { ...map, entries: next };
+                }
+                return { ...map, entries: [...map.entries, { id: nextId(), key, value }] };
+            }
+            case 'MAP_REMOVE': {
+                if (s.type !== 'hashmap') return s;
+                const map = s as HashMapState;
+                const key = command.property ?? '';
+                return { ...map, entries: map.entries.filter(e => e.key !== key) };
+            }
+            case 'UF_UNION': {
+                if (s.type !== 'unionfind') return s;
+                const uf = s as UnionFindState;
+                const a = String(command.label ?? '');
+                const b = String(command.pointerTo ?? '');
+                if (!a || !b) return uf;
+                // Materialize parent: union by making root(a)'s parent = root(b).
+                const root = (x: string, parent: Record<string, string>): string => {
+                    let cur = x;
+                    const seen = new Set<string>();
+                    while (parent[cur] && parent[cur] !== cur && !seen.has(cur)) {
+                        seen.add(cur);
+                        cur = parent[cur];
+                    }
+                    return cur;
+                };
+                const next = { ...uf.parent };
+                if (!(a in next)) next[a] = a;
+                if (!(b in next)) next[b] = b;
+                const ra = root(a, next);
+                const rb = root(b, next);
+                if (ra !== rb) next[ra] = rb;
+                const op = { id: nextId(), op: 'union' as const, a, b };
+                return { ...uf, parent: next, ops: [op, ...uf.ops].slice(0, 20) };
+            }
+            case 'UF_FIND': {
+                if (s.type !== 'unionfind') return s;
+                const uf = s as UnionFindState;
+                const x = String(command.label ?? '');
+                if (!x) return uf;
+                const next = { ...uf.parent };
+                if (!(x in next)) next[x] = x;
+                const op = { id: nextId(), op: 'find' as const, a: x };
+                return { ...uf, parent: next, ops: [op, ...uf.ops].slice(0, 20) };
             }
             case 'ENQUEUE': {
                 const queue = s as QueueState;
@@ -100,15 +191,15 @@ function executeCommand(
                 };
             }
             case 'ALLOCATE_NODE': {
+                const newNode = {
+                    id: command.nodeId!,
+                    type: command.structType || 'Node',
+                    fields: {},
+                    pointers: {},
+                    labels: command.label ? [command.label] : []
+                };
                 if (s.type === 'tree') {
                     const tree = s as TreeState;
-                    const newNode = {
-                        id: command.nodeId!,
-                        type: command.structType || 'Node',
-                        fields: {},
-                        pointers: {},
-                        labels: command.label ? [command.label] : []
-                    };
                     return {
                         ...tree,
                         nodes: [...tree.nodes, newNode],
@@ -117,79 +208,82 @@ function executeCommand(
                 }
                 if (s.type === 'circular') {
                     const circ = s as CircularState;
-                    const newNode = {
-                        id: command.nodeId!,
-                        type: command.structType || 'Node',
-                        fields: {},
-                        pointers: {},
-                        labels: command.label ? [command.label] : []
-                    };
                     return {
                         ...circ,
                         nodes: [...circ.nodes, newNode],
                         headId: circ.headId ?? command.nodeId!,
                     };
                 }
+                if (s.type === 'doubly') {
+                    const dl = s as DoublyState;
+                    return {
+                        ...dl,
+                        nodes: [...dl.nodes, newNode],
+                        headId: dl.headId ?? command.nodeId!,
+                    };
+                }
+                if (s.type === 'graph') {
+                    const g = s as GraphState;
+                    return { ...g, nodes: [...g.nodes, newNode] };
+                }
                 if (s.type !== 'memory') return s;
                 const mem = s as MemoryState;
-                return {
-                    ...mem,
-                    nodes: [...mem.nodes, {
-                        id: command.nodeId!,
-                        type: command.structType || 'Node',
-                        fields: {},
-                        pointers: {},
-                        labels: command.label ? [command.label] : []
-                    }]
-                };
+                return { ...mem, nodes: [...mem.nodes, newNode] };
             }
             case 'SET_LABEL': {
-                if (s.type !== 'memory' && s.type !== 'tree' && s.type !== 'circular') return s;
-                const state = s as MemoryState | TreeState;
+                if (
+                    s.type !== 'memory' && s.type !== 'tree' && s.type !== 'circular'
+                    && s.type !== 'doubly' && s.type !== 'graph'
+                ) return s;
                 const label = command.label!;
                 const targetNodeId = command.nodeId;
-
                 return {
-                    ...state,
-                    nodes: state.nodes.map(n => {
+                    ...s,
+                    nodes: s.nodes.map(n => {
                         const filteredLabels = n.labels.filter(l => l !== label);
                         if (n.id === targetNodeId) {
                             return { ...n, labels: [...filteredLabels, label] };
                         }
                         return { ...n, labels: filteredLabels };
                     })
-                };
+                } as DataStructureState;
             }
             case 'SET_FIELD': {
-                if (s.type !== 'memory' && s.type !== 'tree' && s.type !== 'circular') return s;
-                const state = s as MemoryState | TreeState;
+                if (
+                    s.type !== 'memory' && s.type !== 'tree' && s.type !== 'circular'
+                    && s.type !== 'doubly' && s.type !== 'graph'
+                ) return s;
                 return {
-                    ...state,
-                    nodes: state.nodes.map(n =>
+                    ...s,
+                    nodes: s.nodes.map(n =>
                         n.id === command.nodeId
                             ? { ...n, fields: { ...n.fields, [command.property!]: command.value as number | string | boolean } }
                             : n
                     )
-                };
+                } as DataStructureState;
             }
             case 'SET_POINTER': {
-                if (s.type !== 'memory' && s.type !== 'tree' && s.type !== 'circular') return s;
-                const state = s as MemoryState | TreeState;
+                if (
+                    s.type !== 'memory' && s.type !== 'tree' && s.type !== 'circular'
+                    && s.type !== 'doubly' && s.type !== 'graph'
+                ) return s;
                 return {
-                    ...state,
-                    nodes: state.nodes.map(n =>
+                    ...s,
+                    nodes: s.nodes.map(n =>
                         n.id === command.nodeId
                             ? { ...n, pointers: { ...n.pointers, [command.property!]: command.pointerTo || null } }
                             : n
                     )
-                };
+                } as DataStructureState;
             }
             case 'DELETE_NODE': {
-                if (s.type !== 'memory' && s.type !== 'tree' && s.type !== 'circular') return s;
-                const state = s as MemoryState | TreeState | CircularState;
-                const filtered = state.nodes.filter(n => n.id !== command.nodeId);
+                if (
+                    s.type !== 'memory' && s.type !== 'tree' && s.type !== 'circular'
+                    && s.type !== 'doubly' && s.type !== 'graph'
+                ) return s;
+                const filtered = s.nodes.filter(n => n.id !== command.nodeId);
                 if (s.type === 'tree') {
-                    const tree = state as TreeState;
+                    const tree = s as TreeState;
                     return {
                         ...tree,
                         nodes: filtered,
@@ -197,14 +291,22 @@ function executeCommand(
                     };
                 }
                 if (s.type === 'circular') {
-                    const circ = state as CircularState;
+                    const circ = s as CircularState;
                     return {
                         ...circ,
                         nodes: filtered,
                         headId: circ.headId === command.nodeId ? (filtered.length > 0 ? filtered[0].id : null) : circ.headId,
                     };
                 }
-                return { ...state, nodes: filtered };
+                if (s.type === 'doubly') {
+                    const dl = s as DoublyState;
+                    return {
+                        ...dl,
+                        nodes: filtered,
+                        headId: dl.headId === command.nodeId ? (filtered.length > 0 ? filtered[0].id : null) : dl.headId,
+                    };
+                }
+                return { ...s, nodes: filtered } as DataStructureState;
             }
             default:
                 return s;
@@ -216,9 +318,9 @@ function replayToStep(commands: Command[], targetStep: number): DataStructureSta
     resetParserIds();
     let structures: DataStructureState[] = [];
     for (let i = 0; i <= targetStep; i++) {
-        if (commands[i].type !== 'LOCAL_VAR_UPDATE') {
-            structures = executeCommand(structures, commands[i]);
-        }
+        const t = commands[i].type;
+        if (t === 'LOCAL_VAR_UPDATE' || t === 'STACK_FRAMES') continue;
+        structures = executeCommand(structures, commands[i]);
     }
     return structures;
 }
@@ -238,6 +340,15 @@ function replayLocalVarsToStep(commands: Command[], targetStep: number): LocalVa
         else vars.push(entry);
     }
     return vars;
+}
+
+function replayCallStackToStep(commands: Command[], targetStep: number): string[] {
+    let stack: string[] = [];
+    for (let i = 0; i <= targetStep; i++) {
+        const cmd = commands[i];
+        if (cmd.type === 'STACK_FRAMES' && cmd.frames) stack = cmd.frames;
+    }
+    return stack;
 }
 
 function reducer(state: VisualizerState, action: VisualizerAction): VisualizerState {
@@ -262,7 +373,7 @@ function reducer(state: VisualizerState, action: VisualizerAction): VisualizerSt
                 const name = command.label ?? '';
                 const value = String(command.value ?? '');
                 const type = command.property ?? '';
-                const cleared = state.localVars.map(v => ({ ...v, changed: false }));
+                const cleared: LocalVar[] = state.localVars.map(v => ({ ...v, changed: false }));
                 const idx = cleared.findIndex(v => v.name === name);
                 const entry: LocalVar = { name, type, value, changed: true };
                 if (idx >= 0) cleared[idx] = entry;
@@ -271,6 +382,16 @@ function reducer(state: VisualizerState, action: VisualizerAction): VisualizerSt
                     ...state,
                     currentStep: nextStep,
                     localVars: cleared,
+                    terminalOutput: state.terminalOutput + (command.output || ''),
+                };
+            }
+
+            // STACK_FRAMES: just refresh the call stack
+            if (command.type === 'STACK_FRAMES') {
+                return {
+                    ...state,
+                    currentStep: nextStep,
+                    callStack: command.frames ?? [],
                     terminalOutput: state.terminalOutput + (command.output || ''),
                 };
             }
@@ -294,12 +415,13 @@ function reducer(state: VisualizerState, action: VisualizerAction): VisualizerSt
 
             if (prevStep < 0) {
                 resetParserIds();
-                return { ...state, structures: [], localVars: [], currentStep: -1, terminalOutput: '' };
+                return { ...state, structures: [], localVars: [], callStack: [], currentStep: -1, terminalOutput: '' };
             }
             return {
                 ...state,
                 structures: replayToStep(state.commandHistory, prevStep),
                 localVars: replayLocalVarsToStep(state.commandHistory, prevStep),
+                callStack: replayCallStackToStep(state.commandHistory, prevStep),
                 currentStep: prevStep,
                 terminalOutput: newTerminalOutput,
             };
@@ -316,6 +438,7 @@ function reducer(state: VisualizerState, action: VisualizerAction): VisualizerSt
                 commandHistory: state.commandHistory,
                 stdin: state.stdin,
                 localVars: [],
+                callStack: [],
             };
         case 'SET_RUNNING':
             return { ...state, isRunning: action.isRunning };
@@ -423,6 +546,54 @@ export function useVisualizer() {
         dispatch({ type: 'SET_STDIN', stdin });
     }, []);
 
+    // Source line of the most recently executed command, if any.
+    // Used to highlight the corresponding line in the editor.
+    const currentLine: number | null = (() => {
+        if (state.currentStep < 0) return null;
+        // Walk backwards: the latest command may be a LOCAL_VAR_UPDATE without
+        // a useful `line`, in which case fall back to the prior command's line.
+        for (let i = state.currentStep; i >= 0; i--) {
+            const ln = state.commandHistory[i]?.line;
+            if (typeof ln === 'number' && ln > 0) return ln;
+        }
+        return null;
+    })();
+
+    // Most recent visual change — used by visualizers to pulse/highlight
+    // the node or field that just got mutated.
+    const lastChange: LastChange | null = (() => {
+        if (state.currentStep < 0) return null;
+        const cmd = state.commandHistory[state.currentStep];
+        if (!cmd) return null;
+        switch (cmd.type) {
+            case 'ALLOCATE_NODE':
+            case 'SET_FIELD':
+            case 'SET_POINTER':
+            case 'DELETE_NODE':
+            case 'SET_LABEL':
+                return {
+                    target: cmd.target,
+                    targetName: cmd.targetName,
+                    nodeId: cmd.nodeId ?? null,
+                    property: cmd.property ?? null,
+                    kind: cmd.type,
+                };
+            case 'PUSH':
+            case 'POP':
+            case 'ENQUEUE':
+            case 'DEQUEUE':
+                return {
+                    target: cmd.target,
+                    targetName: cmd.targetName,
+                    nodeId: null,
+                    property: null,
+                    kind: cmd.type,
+                };
+            default:
+                return null;
+        }
+    })();
+
     return {
         state,
         loadCode,
@@ -433,5 +604,15 @@ export function useVisualizer() {
         stopAutoRun,
         setSpeed,
         setStdin,
+        currentLine,
+        lastChange,
     };
+}
+
+export interface LastChange {
+    target: Command['target'];
+    targetName: string;
+    nodeId: string | null;
+    property: string | null;
+    kind: Command['type'];
 }

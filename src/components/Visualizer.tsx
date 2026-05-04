@@ -1,28 +1,64 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import type { DataStructureState } from '../types';
+import type { LastChange } from '../hooks/useVisualizer';
 import StackPlate from './DataStructures/StackPlate';
 import QueueBlock from './DataStructures/QueueBlock';
 import GraphView from './DataStructures/GraphView';
 import TreeChart from './DataStructures/TreeChart';
 import CircularListView from './DataStructures/CircularListView';
+import DoublyListView from './DataStructures/DoublyListView';
+import GraphChart from './DataStructures/GraphChart';
+import HeapView from './DataStructures/HeapView';
+import HashMapView from './DataStructures/HashMapView';
+import UnionFindView from './DataStructures/UnionFindView';
+
+export interface NodeHighlight {
+    nodeId: string | null;
+    property: string | null;
+    kind: LastChange['kind'];
+}
 
 interface Props {
     structures: DataStructureState[];
+    lastChange?: LastChange | null;
 }
 
-function renderStructure(structure: DataStructureState) {
+function renderStructure(structure: DataStructureState, highlight: NodeHighlight | null) {
     switch (structure.type) {
         case 'stack':
-            return <StackPlate data={structure} />;
+            return <StackPlate data={structure} highlight={highlight} />;
         case 'queue':
-            return <QueueBlock data={structure} />;
+            return <QueueBlock data={structure} highlight={highlight} />;
         case 'memory':
-            return <GraphView data={structure} />;
+            return <GraphView data={structure} highlight={highlight} />;
         case 'tree':
-            return <TreeChart data={structure} />;
+            return <TreeChart data={structure} highlight={highlight} />;
         case 'circular':
-            return <CircularListView data={structure} />;
+            return <CircularListView data={structure} highlight={highlight} />;
+        case 'doubly':
+            return <DoublyListView data={structure} highlight={highlight} />;
+        case 'graph':
+            return <GraphChart data={structure} highlight={highlight} />;
+        case 'heap':
+            return <HeapView data={structure} highlight={highlight} />;
+        case 'hashmap':
+            return <HashMapView data={structure} highlight={highlight} />;
+        case 'unionfind':
+            return <UnionFindView data={structure} highlight={highlight} />;
     }
+}
+
+function highlightFor(structure: DataStructureState, lastChange: LastChange | null | undefined): NodeHighlight | null {
+    if (!lastChange) return null;
+    // Memory-class structures get reclassified into different targets after analysis.
+    // The lastChange.target follows that reclassification, so a 'doubly' structure
+    // matches a lastChange.target === 'doubly', and so on. We only need name + target equality.
+    if (lastChange.target !== structure.type || lastChange.targetName !== structure.name) return null;
+    return {
+        nodeId: lastChange.nodeId,
+        property: lastChange.property,
+        kind: lastChange.kind,
+    };
 }
 
 const TYPE_COLORS: Record<string, string> = {
@@ -31,16 +67,21 @@ const TYPE_COLORS: Record<string, string> = {
     memory: 'border-accent-purple/40',
     tree: 'border-green-500/20',
     circular: 'border-amber-500/30',
+    doubly: 'border-accent-cyan/40',
+    graph: 'border-rose-500/30',
+    heap: 'border-orange-500/30',
+    hashmap: 'border-pink-500/30',
+    unionfind: 'border-emerald-500/30',
 };
 
-export default function Visualizer({ structures }: Props) {
+export default function Visualizer({ structures, lastChange }: Props) {
     const [boxDimensions, setBoxDimensions] = useState<Record<string, { w: number, h: number }>>({});
     const draggingRef = useRef<{ id: string, startY: number, startX: number, startW: number, startH: number, mode: 'v' | 'h' | 'both' } | null>(null);
 
     const onMouseDown = (id: string, mode: 'v' | 'h' | 'both', e: React.MouseEvent) => {
-        const current = boxDimensions[id] || { 
-            w: (document.getElementById(`container-${id}`)?.clientWidth || 400), 
-            h: (id.includes('memory') || id.includes('tree') ? 450 : 300)
+        const current = boxDimensions[id] || {
+            w: (document.getElementById(`container-${id}`)?.clientWidth || 400),
+            h: (id.includes('memory') || id.includes('tree') || id.includes('doubly') || id.includes('graph') || id.includes('circular') ? 450 : 300)
         };
         draggingRef.current = { id, startY: e.clientY, startX: e.clientX, startW: current.w, startH: current.h, mode };
         
@@ -108,9 +149,15 @@ export default function Visualizer({ structures }: Props) {
             <div className="flex flex-wrap gap-6 items-start">
                 {structures.map((structure) => {
                     const id = `${structure.type}-${structure.name}`;
-                    const dim = boxDimensions[id] || { 
+                    const dim = boxDimensions[id] || {
                         w: -1, // -1 means use default or auto
-                        h: (structure.type === 'memory' || structure.type === 'tree' || structure.type === 'circular' ? 450 : 300)
+                        h: (
+                            structure.type === 'memory' || structure.type === 'tree'
+                            || structure.type === 'circular' || structure.type === 'doubly'
+                            || structure.type === 'graph' || structure.type === 'heap'
+                            || structure.type === 'hashmap' || structure.type === 'unionfind'
+                                ? 450 : 300
+                        )
                     };
                     
                     return (
@@ -132,7 +179,7 @@ export default function Visualizer({ structures }: Props) {
                             `}
                         >
                             <div className="flex-1 flex items-center justify-center overflow-hidden p-6 relative">
-                                {renderStructure(structure)}
+                                {renderStructure(structure, highlightFor(structure, lastChange))}
                             </div>
 
                             {/* Resize Handle (Bottom - Vertical) */}

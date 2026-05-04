@@ -159,6 +159,36 @@ namespace __vt {
                   << "}" << std::endl;
     }
 
+    // Union-Find: union(a, b) and find(x) ops emit synthetic events that the
+    // frontend's stepMapper turns into UF_UNION / UF_FIND commands.
+    template<typename A, typename B>
+    inline void uf_union(int line, const char* var, A a, B b) {
+        std::ostringstream oa, ob;
+        oa << a;
+        ob << b;
+        std::cout << "__TRACE__{"
+                  << "\"step\":" << ++step
+                  << ",\"line\":" << line
+                  << ",\"type\":\"UF_UNION\""
+                  << ",\"var\":\"" << var << "\""
+                  << ",\"field\":\"" << oa.str() << "\""
+                  << ",\"arg2\":\"" << ob.str() << "\""
+                  << "}" << std::endl;
+    }
+
+    template<typename X>
+    inline void uf_find(int line, const char* var, X x) {
+        std::ostringstream ox;
+        ox << x;
+        std::cout << "__TRACE__{"
+                  << "\"step\":" << ++step
+                  << ",\"line\":" << line
+                  << ",\"type\":\"UF_FIND\""
+                  << ",\"var\":\"" << var << "\""
+                  << ",\"field\":\"" << ox.str() << "\""
+                  << "}" << std::endl;
+    }
+
     inline void set_line(int line, const char* raw) {
         std::cout << "__TRACE__{"
                   << "\"step\":" << ++step

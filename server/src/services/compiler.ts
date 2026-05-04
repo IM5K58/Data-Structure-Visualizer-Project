@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import { writeFile, mkdir } from 'fs/promises';
+import { existsSync } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { tmpdir } from 'os';
@@ -15,6 +16,66 @@ export interface CompileWithDebugResult {
 const GPP_PATH = process.env.GPP_PATH || (process.platform === 'win32' ? 'C:\\msys64\\ucrt64\\bin\\g++.exe' : '/usr/bin/g++');
 const PISTON_URL = process.env.PISTON_URL || '';
 const SANDBOX_DIR = join(process.cwd(), 'sandbox');
+
+// ─── Resource limits (Linux only) ──────────────────────────────────────────
+// Wrap user code & compiler invocations with `prlimit` (util-linux) so a
+// runaway program can't take down the host. No-op on Windows/macOS.
+//
+// All values overridable via env vars so deployers can tune per-platform.
+const RLIMIT = {
+    cpuSec:   parseInt(process.env.RLIMIT_CPU_SEC   ?? '8'),       // CPU seconds
+    asBytes:  parseInt(process.env.RLIMIT_AS_BYTES  ?? `${256 * 1024 * 1024}`), // virtual mem
+    stackBytes: parseInt(process.env.RLIMIT_STACK_BYTES ?? `${16 * 1024 * 1024}`),
+    fsizeBytes: parseInt(process.env.RLIMIT_FSIZE_BYTES ?? `${8 * 1024 * 1024}`),
+    nofile:   parseInt(process.env.RLIMIT_NOFILE    ?? '64'),
+    nproc:    parseInt(process.env.RLIMIT_NPROC     ?? '64'),
+};
+const PRLIMIT_PATH = process.env.PRLIMIT_PATH ?? '/usr/bin/prlimit';
+// Probe once at module load. If prlimit isn't on the system (e.g. minimal
+// container without util-linux, or non-Linux platform), we silently degrade
+// to running without resource limits rather than crashing every request.
+const PRLIMIT_AVAILABLE = process.platform === 'linux' && existsSync(PRLIMIT_PATH);
+const RLIMIT_ENABLED =
+    PRLIMIT_AVAILABLE
+    && process.env.DISABLE_RLIMIT !== 'true';
+
+if (process.platform === 'linux' && !PRLIMIT_AVAILABLE) {
+    console.warn(
+        `  ⚠ prlimit not found at ${PRLIMIT_PATH} — resource limits disabled. ` +
+        `Install util-linux or set PRLIMIT_PATH.`,
+    );
+}
+
+/**
+ * Wrap a command in prlimit on Linux, otherwise return as-is.
+ * Returns [command, args] tuple ready for spawn().
+ */
+export function withRlimit(cmd: string, args: string[]): [string, string[]] {
+    if (!RLIMIT_ENABLED) return [cmd, args];
+    return [PRLIMIT_PATH, [...rlimitFlags(), '--', cmd, ...args]];
+}
+
+/**
+ * Returns the prlimit flag list (without the trailing `--`).
+ * Useful for callers that need to construct an exec-wrapper string
+ * (e.g., GDB's `set exec-wrapper prlimit --cpu=N ...`).
+ * On non-Linux platforms returns null.
+ */
+export function rlimitWrapperPrefix(): string | null {
+    if (!RLIMIT_ENABLED) return null;
+    return [PRLIMIT_PATH, ...rlimitFlags()].join(' ');
+}
+
+function rlimitFlags(): string[] {
+    return [
+        `--cpu=${RLIMIT.cpuSec}`,
+        `--as=${RLIMIT.asBytes}`,
+        `--stack=${RLIMIT.stackBytes}`,
+        `--fsize=${RLIMIT.fsizeBytes}`,
+        `--nofile=${RLIMIT.nofile}`,
+        `--nproc=${RLIMIT.nproc}`,
+    ];
+}
 
 // Linux에서는 RAM 기반 /dev/shm을 사용해 디스크 I/O 절감
 function getTempBase(): string {
@@ -58,12 +119,11 @@ export async function compileWithDebug(code: string): Promise<CompileWithDebugRe
     await mkdir(jobDir, { recursive: true });
     await writeFile(srcFile, code, 'utf-8');
 
-    const result = await runProcess(
+    const [cmd, args] = withRlimit(
         GPP_PATH,
         [srcFile, '-o', outFile, '-g', '-O0', '-std=c++17', '-pipe'],
-        jobDir,
-        15000,
     );
+    const result = await runProcess(cmd, args, jobDir, 15000);
 
     return {
         success: result.code === 0,
@@ -87,7 +147,11 @@ export async function executeLocal(code: string, stdin: string = ''): Promise<Pi
 
     // 1. 컴파일
     const includeDir = join(process.cwd(), 'sandbox');
-    const compileResult = await runProcess(GPP_PATH, [srcFile, '-o', outFile, '-std=c++17', '-pipe', '-I', includeDir], jobDir, 10000);
+    const [compileCmd, compileArgs] = withRlimit(
+        GPP_PATH,
+        [srcFile, '-o', outFile, '-std=c++17', '-pipe', '-I', includeDir],
+    );
+    const compileResult = await runProcess(compileCmd, compileArgs, jobDir, 10000);
     console.log('  Compile result:', JSON.stringify(compileResult));
 
     if (compileResult.code !== 0) {
@@ -108,7 +172,8 @@ export async function executeLocal(code: string, stdin: string = ''): Promise<Pi
     }
 
     // 2. 실행
-    const runResult = await runProcess(outFile, [], jobDir, 5000, stdin);
+    const [runCmd, runArgs] = withRlimit(outFile, []);
+    const runResult = await runProcess(runCmd, runArgs, jobDir, 5000, stdin);
 
     await cleanup(jobDir);
 

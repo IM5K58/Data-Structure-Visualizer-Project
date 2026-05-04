@@ -4,7 +4,7 @@
  * that are compatible with the existing frontend stepMapper.
  */
 
-import type { GDBSnapshot, GDBField, GDBLocal } from './gdbDriver.js';
+import type { GDBSnapshot, GDBField, GDBLocal, STLSnapshot } from './gdbDriver.js';
 import { isPointerType, isNullPointer, isIntegralType } from './gdbDriver.js';
 
 // Mirror of the frontend TraceStep type (kept in sync with src/api/compilerApi.ts)
@@ -19,9 +19,15 @@ export interface TraceStep {
     addr?: string;
     target?: string;
     struct?: string;
-    hint?: 'stack' | 'queue' | 'node' | 'tree' | 'circular';
+    hint?: 'stack' | 'queue' | 'node' | 'tree' | 'circular' | 'heap' | 'hashmap' | 'unionfind';
     raw?: string;
     output?: string;
+    /** Call stack (outermost→innermost) for STACK_FRAMES events */
+    frames?: string[];
+    /** For map operations (MAP_SET / MAP_REMOVE) */
+    key?: string;
+    /** For UF_UNION: the second operand */
+    arg2?: string;
 }
 
 // ===== Helpers =====
@@ -67,6 +73,9 @@ export function snapshotsToTraceSteps(
     let prevStructData = new Map<string, GDBField[]>();
     let prevValueStructData = new Map<string, GDBField[]>();
     let prevArrayReadings = new Map<string, string>();
+    let prevSTLContainers = new Map<string, STLSnapshot>();
+    const knownSTLVars = new Set<string>();
+    let prevCallStack: string[] = [];
 
     // varName → { hint, initialIdx, idxFieldName, arrFieldName }
     const knownValueStructs = new Map<string, {
@@ -79,6 +88,23 @@ export function snapshotsToTraceSteps(
     for (let i = 0; i < snapshots.length; i++) {
         const snap = snapshots[i];
         const isLast = i === snapshots.length - 1;
+
+        // ── 0. Call stack diff ────────────────────────────────────────────────
+        // Emit a STACK_FRAMES event only when the stack changed since the
+        // previous snapshot (function call / return). The frontend uses these
+        // to refresh its call-stack panel.
+        const cs = snap.callStack ?? [];
+        const csChanged =
+            cs.length !== prevCallStack.length ||
+            cs.some((f, k) => f !== prevCallStack[k]);
+        if (csChanged) {
+            push({
+                line: snap.line,
+                type: 'STACK_FRAMES',
+                frames: cs.slice(),
+                raw: `[Line ${snap.line}] frames: ${cs.join(' › ') || '(empty)'}`,
+            });
+        }
 
         // ── 1. New allocations ────────────────────────────────────────────────
         // A genuine allocation is detected when a pointer variable changes to a
@@ -316,6 +342,116 @@ export function snapshotsToTraceSteps(
             });
         }
 
+        // ── 4b. STL containers (std::stack / queue / priority_queue / vector / deque / map) ──
+        for (const [varName, info] of snap.stlContainers) {
+            const prev = prevSTLContainers.get(varName);
+
+            // Hint mapping → frontend visualization:
+            //   priority_queue                              → 'heap'
+            //   map / unordered_map                         → 'hashmap'
+            //   queue                                       → 'queue'
+            //   stack / vector / deque                      → 'stack'
+            const hint =
+                info.kind === 'priority_queue' ? 'heap'
+                : (info.kind === 'map' || info.kind === 'unordered_map') ? 'hashmap'
+                : info.kind === 'queue' ? 'queue'
+                : 'stack';
+
+            if (!knownSTLVars.has(varName)) {
+                push({
+                    line: snap.line,
+                    type: 'ALLOC',
+                    var: varName,
+                    addr: `__stl__${varName}`,
+                    hint,
+                    raw: `[Line ${snap.line}] ${varName} (std::${info.kind}, size=${info.size})`,
+                });
+                knownSTLVars.add(varName);
+
+                // Replay current contents so visualization is in sync.
+                if (hint === 'hashmap' && info.entries) {
+                    for (const e of info.entries) {
+                        push({
+                            line: snap.line,
+                            type: 'MAP_SET',
+                            var: varName,
+                            key: e.key,
+                            value: e.value,
+                            raw: `[Line ${snap.line}] ${varName}[${e.key}] = ${e.value}`,
+                        });
+                    }
+                } else if ((hint === 'stack' || hint === 'queue' || hint === 'heap') && info.size > 0 && info.pushValue !== undefined) {
+                    for (let i = 0; i < info.size; i++) {
+                        push({
+                            line: snap.line,
+                            type: 'PUSH',
+                            var: varName,
+                            value: info.pushValue,
+                            raw: `[Line ${snap.line}] ${varName}.push(?)`,
+                        });
+                    }
+                }
+                continue;
+            }
+
+            if (!prev) continue;
+
+            if (hint === 'hashmap') {
+                // Diff entries: emit MAP_SET for added/changed, MAP_REMOVE for removed.
+                const prevEntries = new Map((prev.entries ?? []).map(e => [e.key, e.value]));
+                const currEntries = new Map((info.entries ?? []).map(e => [e.key, e.value]));
+                for (const [k, v] of currEntries) {
+                    if (prevEntries.get(k) !== v) {
+                        push({
+                            line: snap.line,
+                            type: 'MAP_SET',
+                            var: varName,
+                            key: k,
+                            value: v,
+                            raw: `[Line ${snap.line}] ${varName}[${k}] = ${v}`,
+                        });
+                    }
+                }
+                for (const k of prevEntries.keys()) {
+                    if (!currEntries.has(k)) {
+                        push({
+                            line: snap.line,
+                            type: 'MAP_REMOVE',
+                            var: varName,
+                            key: k,
+                            raw: `[Line ${snap.line}] ${varName}.erase(${k})`,
+                        });
+                    }
+                }
+                continue;
+            }
+
+            // PUSH/POP-style containers (stack, queue, heap, vector, deque)
+            if (prev.size === info.size) continue;
+
+            if (info.size > prev.size) {
+                const value = info.pushValue ?? '';
+                for (let i = prev.size; i < info.size; i++) {
+                    push({
+                        line: snap.line,
+                        type: 'PUSH',
+                        var: varName,
+                        value,
+                        raw: `[Line ${snap.line}] ${varName}.push(${value})`,
+                    });
+                }
+            } else {
+                for (let i = prev.size; i > info.size; i--) {
+                    push({
+                        line: snap.line,
+                        type: 'POP',
+                        var: varName,
+                        raw: `[Line ${snap.line}] ${varName}.pop()`,
+                    });
+                }
+            }
+        }
+
         // ── 5. Array-based struct (Stack / Queue) ────────────────────────────
         for (const [varName, fields] of snap.valueStructData) {
             const arrFields = fields.filter(f => f.type.includes('['));
@@ -454,6 +590,8 @@ export function snapshotsToTraceSteps(
         prevStructData = snap.structData;
         prevValueStructData = snap.valueStructData;
         prevArrayReadings = snap.arrayReadings;
+        prevSTLContainers = snap.stlContainers;
+        prevCallStack = cs;
     }
 
     return steps;

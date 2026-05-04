@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { QueueState } from '../../types';
+import type { NodeHighlight } from '../Visualizer';
 
 interface Props {
     data: QueueState;
+    /** Enqueue/dequeue is already conveyed by the lastAction badge derived from item-count diff. */
+    highlight?: NodeHighlight | null;
 }
 
 export default function QueueBlock({ data }: Props) {

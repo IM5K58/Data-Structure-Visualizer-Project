@@ -5,6 +5,7 @@
 
 import { spawn, ChildProcess } from 'child_process';
 import { writeFile, readFile, rm } from 'fs/promises';
+import { rlimitWrapperPrefix } from './compiler.js';
 
 const GDB_PATH = process.env.GDB_PATH ?? (process.platform === 'win32'
     ? 'C:\\msys64\\ucrt64\\bin\\gdb.exe'
@@ -34,6 +35,17 @@ export interface GDBStopInfo {
     func: string;
 }
 
+export type STLKind = 'stack' | 'queue' | 'priority_queue' | 'vector' | 'deque' | 'unordered_map' | 'map';
+
+export interface STLSnapshot {
+    kind: STLKind;
+    size: number;
+    /** Most-recently-pushed value (top() for stack/PQ, back() for vector/deque/queue). */
+    pushValue?: string;
+    /** For map/unordered_map: enumerated entries, captured via pretty printer. */
+    entries?: { key: string; value: string }[];
+}
+
 export interface GDBSnapshot {
     line: number;
     func: string;
@@ -44,6 +56,10 @@ export interface GDBSnapshot {
     valueStructData: Map<string, GDBField[]>;
     /** "varName.field[idx]" → element value (for array-based Stack/Queue) */
     arrayReadings: Map<string, string>;
+    /** varName → STL container observation (size + most recent push value) */
+    stlContainers: Map<string, STLSnapshot>;
+    /** Call stack: outermost → innermost function names (e.g. ['main','solve','dfs']) */
+    callStack: string[];
 }
 
 export interface GDBSessionResult {
@@ -213,6 +229,28 @@ export function isIntegralType(type: string): boolean {
     return /^(int|char|size_t|ptrdiff_t)$/.test(clean);
 }
 
+/**
+ * Detect supported STL container types by GDB type string.
+ * Returns the kind (stack/queue/...) or null if not a supported STL container.
+ *
+ * Type strings come back from GDB with full template params, e.g.:
+ *   "std::stack<int, std::deque<int, std::allocator<int> > >"
+ *   "std::vector<int, std::allocator<int> >"
+ *
+ * We match the leading "std::<name><" prefix.
+ */
+export function detectSTL(type: string): STLKind | null {
+    const t = type.trimStart();
+    if (/^std::stack\s*</.test(t))           return 'stack';
+    if (/^std::priority_queue\s*</.test(t))  return 'priority_queue';
+    if (/^std::queue\s*</.test(t))           return 'queue';
+    if (/^std::vector\s*</.test(t))          return 'vector';
+    if (/^std::deque\s*</.test(t))           return 'deque';
+    if (/^std::unordered_map\s*</.test(t))   return 'unordered_map';
+    if (/^std::map\s*</.test(t))             return 'map';
+    return null;
+}
+
 function strOf(v: unknown): string {
     return v == null ? '' : String(v);
 }
@@ -243,6 +281,9 @@ export class GDBDriver {
                 env.PATH = `${msysBin};${env.PATH ?? ''}`;
             }
 
+            // Don't rlimit GDB itself (GDB needs heap room for its own state).
+            // We apply the limits only to the inferior via `set exec-wrapper`,
+            // which is sent after GDB starts (see start-of-session below).
             this.proc = spawn(GDB_PATH, [
                 '--interpreter=mi2',
                 '--quiet',
@@ -357,6 +398,19 @@ export class GDBDriver {
         await this.sendMI(`break-insert -f ${location}`).catch(() => {});
     }
 
+    /**
+     * Apply per-inferior resource limits via GDB's exec-wrapper.
+     * No-op on non-Linux. Must be called BEFORE running the inferior.
+     */
+    async applyExecWrapper(): Promise<void> {
+        const wrapper = rlimitWrapperPrefix();
+        if (!wrapper) return;
+        // GDB MI parses strings as quoted; embed the wrapper command literally.
+        await this.sendMI(
+            `interpreter-exec console "set exec-wrapper ${wrapper}"`,
+        ).catch(() => {});
+    }
+
     async runWithRedirect(stdinFile: string, stdoutFile: string): Promise<GDBStopInfo> {
         const stopPromise = this.waitStop();
         // Convert Windows backslashes to forward slashes for GDB shell.
@@ -382,6 +436,30 @@ export class GDBDriver {
             return await stopPromise;
         } catch {
             return null;
+        }
+    }
+
+    /**
+     * Returns the current call stack, outermost → innermost function names.
+     * For visualization (recursion / function-call hierarchy).
+     */
+    async getCallStack(): Promise<string[]> {
+        try {
+            const res = await this.sendMI('stack-list-frames');
+            if (res.class !== 'done') return [];
+            const stack = res.results['stack'];
+            if (!Array.isArray(stack)) return [];
+            // Frames come back with `level` and `func`. GDB orders innermost first
+            // (level=0 = current), so we reverse for outermost-first.
+            const frames = (stack as unknown[])
+                .map(f => {
+                    const obj = f as Record<string, unknown>;
+                    return strOf(obj['func']) || '<unknown>';
+                })
+                .reverse();
+            return frames;
+        } catch {
+            return [];
         }
     }
 
@@ -512,6 +590,64 @@ export class GDBDriver {
     }
 
     /**
+     * Enumerate entries of a libstdc++ map / unordered_map via the pretty
+     * printer's children. Best-effort: returns [] on any error or unsupported
+     * GDB version. Children format we care about (libstdc++):
+     *   children=[
+     *     child={exp="[<key>]", value="<value>", type="..."},
+     *     ...
+     *   ]
+     * Older versions expose alternating key/value pairs as separate children.
+     * We handle both.
+     */
+    async enumerateMapEntries(varName: string): Promise<{ key: string; value: string }[]> {
+        const tmp = `vmap${this.token}`;
+        try {
+            const created = await this.sendMI(`var-create ${tmp} * ${varName}`);
+            if (created.class !== 'done') return [];
+            const numchild = parseInt(strOf(created.results['numchild'])) || 0;
+            if (numchild === 0) {
+                await this.sendMI(`var-delete ${tmp}`).catch(() => {});
+                return [];
+            }
+            const childRes = await this.sendMI(`var-list-children --all-values ${tmp}`);
+            await this.sendMI(`var-delete ${tmp}`).catch(() => {});
+            if (childRes.class !== 'done') return [];
+            const children = childRes.results['children'];
+            if (!Array.isArray(children)) return [];
+
+            const entries: { key: string; value: string }[] = [];
+            const flat: { exp: string; value: string }[] = [];
+            for (const c of children as unknown[]) {
+                const obj = c as Record<string, unknown>;
+                flat.push({
+                    exp: strOf(obj['exp'] ?? obj['name']),
+                    value: stripGDBAnnotation(strOf(obj['value'])),
+                });
+            }
+
+            // Format A: each child has exp like "[42]" or "[\"foo\"]" with value
+            const formatA = flat.every(c => /^\[.+\]$/.test(c.exp));
+            if (formatA) {
+                for (const c of flat) {
+                    const key = c.exp.replace(/^\[(.*)\]$/, '$1');
+                    entries.push({ key, value: c.value });
+                }
+                return entries;
+            }
+
+            // Format B: alternating key/value children (older libstdc++)
+            for (let i = 0; i + 1 < flat.length; i += 2) {
+                entries.push({ key: flat[i].value, value: flat[i + 1].value });
+            }
+            return entries;
+        } catch {
+            await this.sendMI(`var-delete ${tmp}`).catch(() => {});
+            return [];
+        }
+    }
+
+    /**
      * Inspect a value-type (stack-allocated) struct local variable.
      * Returns its scalar fields and array-field metadata.
      */
@@ -573,6 +709,7 @@ export async function runGDBSession(
         await driver.start(binaryPath);
         console.log('  [GDB] started OK, setting breakpoint at main');
         await driver.setBreakpoint('main');
+        await driver.applyExecWrapper();
         console.log('  [GDB] breakpoint set, running with redirect');
 
         let stop: GDBStopInfo;
@@ -637,11 +774,50 @@ export async function runGDBSession(
                 }
             }
 
+            // Detect STL containers (std::stack / queue / priority_queue / vector / deque)
+            // by evaluating .size() and the most-recently-pushed element.
+            const stlContainers = new Map<string, STLSnapshot>();
+            for (const local of locals) {
+                if (isPointerType(local.type)) continue;
+                const kind = detectSTL(local.type);
+                if (!kind) continue;
+
+                const sizeStr = await driver.evaluateExpression(`${local.name}.size()`);
+                const size = parseInt(sizeStr);
+                if (isNaN(size) || size < 0) continue;
+
+                let pushValue: string | undefined;
+                let entries: { key: string; value: string }[] | undefined;
+
+                if (kind === 'unordered_map' || kind === 'map') {
+                    // Map containers — enumerate entries via pretty printer.
+                    if (size > 0) {
+                        entries = await driver.enumerateMapEntries(local.name);
+                    } else {
+                        entries = [];
+                    }
+                } else if (size > 0) {
+                    if (kind === 'stack' || kind === 'priority_queue') {
+                        pushValue = await driver.evaluateExpression(`${local.name}.top()`);
+                    } else if (kind === 'queue') {
+                        // back() reflects the most recently enqueued element.
+                        pushValue = await driver.evaluateExpression(`${local.name}.back()`);
+                    } else {
+                        // vector / deque
+                        pushValue = await driver.evaluateExpression(`${local.name}.back()`);
+                    }
+                    if (pushValue === '') pushValue = undefined;
+                }
+                stlContainers.set(local.name, { kind, size, pushValue, entries });
+            }
+
             // Inspect stack-allocated struct locals (array-based Stack/Queue)
             const valueStructData = new Map<string, GDBField[]>();
             const arrayReadings   = new Map<string, string>();
             for (const local of locals) {
                 if (isPointerType(local.type)) continue;
+                // Skip STL containers — we already handled them above.
+                if (detectSTL(local.type)) continue;
                 if (!isStructType(local.type))  continue;
                 const fields = await driver.inspectValueStruct(local.name);
                 if (fields.length === 0) continue;
@@ -666,7 +842,8 @@ export async function runGDBSession(
                 }
             }
 
-            snapshots.push({ line: stop.line, func: stop.func, locals, structData, valueStructData, arrayReadings });
+            const callStack = await driver.getCallStack();
+            snapshots.push({ line: stop.line, func: stop.func, locals, structData, valueStructData, arrayReadings, stlContainers, callStack });
 
             const nextStop = await driver.next();
             if (!nextStop) break;

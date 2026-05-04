@@ -11,9 +11,15 @@ export interface TraceStep {
     addr?: string;
     target?: string;
     struct?: string;
-    hint?: 'stack' | 'queue' | 'node' | 'tree' | 'circular';
+    hint?: 'stack' | 'queue' | 'node' | 'tree' | 'circular' | 'heap' | 'hashmap' | 'unionfind';
     raw?: string;
     output?: string;
+    /** Call stack frames (outermost → innermost) for STACK_FRAMES events */
+    frames?: string[];
+    /** For map operations (MAP_SET / MAP_REMOVE) */
+    key?: string;
+    /** For UF_UNION: the second operand */
+    arg2?: string;
 }
 
 export interface CompileResponse {

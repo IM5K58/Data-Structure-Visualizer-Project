@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import type { MemoryState } from '../../types';
+import type { NodeHighlight } from '../Visualizer';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface Props {
     data: MemoryState;
+    highlight?: NodeHighlight | null;
 }
 
 interface Edge {
@@ -28,7 +30,7 @@ function getElementLocalPos(el: HTMLElement, targetParent: HTMLElement) {
     return { x: left, y: top, width: el.offsetWidth, height: el.offsetHeight };
 }
 
-export default function GraphView({ data }: Props) {
+export default function GraphView({ data, highlight }: Props) {
     const containerRef = useRef<HTMLDivElement>(null);
     const mainContainerRef = useRef<HTMLDivElement>(null);
     const [edges, setEdges] = useState<Edge[]>([]);
@@ -39,6 +41,15 @@ export default function GraphView({ data }: Props) {
     const [offset, setOffset] = useState({ x: 0, y: 0 });
     const isDraggingPan = useRef(false);
     const lastPos = useRef({ x: 0, y: 0 });
+
+    // Pulse the most recently changed node + field for ~700ms after a step.
+    const [pulse, setPulse] = useState<{ nodeId: string | null; property: string | null } | null>(null);
+    useEffect(() => {
+        if (!highlight || !highlight.nodeId) return;
+        setPulse({ nodeId: highlight.nodeId, property: highlight.property });
+        const t = setTimeout(() => setPulse(null), 700);
+        return () => clearTimeout(t);
+    }, [highlight]);
 
     const handleMouseDown = (e: React.MouseEvent) => {
         if (e.button === 0) {
@@ -419,23 +430,36 @@ export default function GraphView({ data }: Props) {
                                     className="absolute inset-[-20px] bg-accent-purple/15 blur-[25px] rounded-full z-[-1]"
                                 />
                             )}
-                            <div id={`node-${node.id}`} className={`flex flex-col items-center relative transition-shadow duration-500 ${isNew || isTop ? 'shadow-[0_0_40px_rgba(192,132,252,0.3)]' : ''}`}>
+                            <div
+                                id={`node-${node.id}`}
+                                className={`flex flex-col items-center relative transition-shadow duration-500 ${
+                                    pulse?.nodeId === node.id
+                                        ? 'ring-2 ring-accent-cyan rounded-lg shadow-[0_0_30px_rgba(0,229,255,0.5)]'
+                                        : isNew || isTop ? 'shadow-[0_0_40px_rgba(192,132,252,0.3)]' : ''
+                                }`}
+                            >
                                 <div className="bg-bg-tertiary px-3 py-1 rounded-t-lg border border-border text-[10px] font-bold text-text-secondary w-full text-center tracking-wider z-10">{node.type}</div>
                                 <div className="bg-bg-panel border border-t-0 border-border rounded-b-lg shadow-xl shadow-bg-secondary/20 overflow-hidden w-36 relative">
-                                    {Object.entries(node.fields).map(([fieldName, val]) => (
-                                        <div key={fieldName} className="flex border-b border-border/40 text-xs text-center border-border/40">
+                                    {Object.entries(node.fields).map(([fieldName, val]) => {
+                                        const fieldPulse = pulse?.nodeId === node.id && pulse?.property === fieldName;
+                                        return (
+                                        <div key={fieldName} className={`flex border-b border-border/40 text-xs text-center border-border/40 transition-colors duration-500 ${fieldPulse ? 'bg-accent-cyan/20' : ''}`}>
                                             <div className="w-[45%] p-1.5 border-r border-border/40 text-text-muted bg-black/10 text-[11px] font-mono tracking-tighter truncate">{fieldName}</div>
                                             <div className="w-[55%] p-1.5 text-accent-cyan font-bold truncate overflow-visible">{val !== undefined ? String(val) : '?'}</div>
                                         </div>
-                                    ))}
-                                    {Object.entries(node.pointers).map(([ptrName, targetId]) => (
-                                        <div key={ptrName} className="flex border-b border-border/40 text-xs bg-accent-purple/5">
+                                        );
+                                    })}
+                                    {Object.entries(node.pointers).map(([ptrName, targetId]) => {
+                                        const ptrPulse = pulse?.nodeId === node.id && pulse?.property === ptrName;
+                                        return (
+                                        <div key={ptrName} className={`flex border-b border-border/40 text-xs transition-colors duration-500 ${ptrPulse ? 'bg-accent-cyan/25' : 'bg-accent-purple/5'}`}>
                                             <div className="w-[45%] p-1.5 border-r border-border/40 text-text-muted text-center bg-black/20 text-[11px] font-mono tracking-tighter truncate">{ptrName}</div>
                                             <div id={`ptr-${node.id}-${ptrName}`} className="w-[55%] p-1.5 text-accent-purple text-center tracking-tighter truncate opacity-80 font-bold bg-accent-purple/5">
                                                 {targetId ? `*${(targetId as string).includes('-') ? (targetId as string).split('-')[1] : (targetId as string).slice(-4)}` : 'null'}
                                             </div>
                                         </div>
-                                    ))}
+                                        );
+                                    })}
                                     {Object.keys(node.fields).length === 0 && Object.keys(node.pointers).length === 0 && (
                                         <div className="p-4 text-center text-[10px] text-text-muted italic opacity-50 font-mono">Uninitialized Memory</div>
                                     )}

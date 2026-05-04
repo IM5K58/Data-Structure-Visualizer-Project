@@ -7,17 +7,26 @@ interface StructDef {
     name: string;
     fields: { name: string; type: string; isPointer: boolean; isArray?: boolean }[];
     methods: string[];
-    hint?: 'stack' | 'queue' | 'node' | 'tree';
+    hint?: 'stack' | 'queue' | 'node' | 'tree' | 'unionfind';
     suppressInternals?: boolean; // AI 또는 정적 분석에서 결정
     extendedHint?: 'circular'; // circular_linked_list 전달용
 }
 
+const UF_FIND_METHODS = new Set(['find', 'findset', 'find_set', 'findroot', 'find_root', 'root']);
+const UF_UNION_METHODS = new Set(['union', 'unite', 'unionset', 'union_set', 'merge', 'unionsets']);
+function isUFFindMethod(m: string): boolean { return UF_FIND_METHODS.has(m.toLowerCase()); }
+function isUFUnionMethod(m: string): boolean { return UF_UNION_METHODS.has(m.toLowerCase()); }
+
 // STL 컨테이너 → 자료구조 힌트 매핑
+// vector: 일반적으로 push_back/pop_back으로 사용되므로 stack-like로 시각화
+// deque: push_back+pop_front 사용이 흔하므로 queue로 — 양쪽 모두에서 push/pop 가능하지만
+//        시각화 용도로는 queue 쪽이 더 정보량이 많음
 const STL_CONTAINER_HINTS: Record<string, 'stack' | 'queue'> = {
     'queue': 'queue',
     'stack': 'stack',
     'priority_queue': 'queue',
     'deque': 'queue',
+    'vector': 'stack',
 };
 
 const STL_PUSH_METHODS = ['push', 'push_back', 'push_front', 'enqueue'];
@@ -250,6 +259,26 @@ export function instrument(code: string, analysis?: import('./codeAnalyzer.js').
                     const stlBase = typeName.replace('std::', '');
                     hint = STL_CONTAINER_HINTS[stlBase];
                 }
+                if (hint === 'unionfind') {
+                    // Union-Find: emit synthetic UF_UNION / UF_FIND trace events.
+                    if (isUFUnionMethod(methodName) && args) {
+                        // Split top-level commas inside args (best-effort; expressions
+                        // with template/parens get tricky but typical UF args are simple ints).
+                        const parts = splitTopLevelCommaArgs(args);
+                        if (parts.length >= 2) {
+                            output.push(`    __vt::uf_union(${lineNum}, "${varName}", (${parts[0]}), (${parts[1]}));`);
+                            methodInstrumented = true;
+                        }
+                    } else if (isUFFindMethod(methodName) && args) {
+                        const parts = splitTopLevelCommaArgs(args);
+                        if (parts.length >= 1) {
+                            output.push(`    __vt::uf_find(${lineNum}, "${varName}", (${parts[0]}));`);
+                            methodInstrumented = true;
+                        }
+                    }
+                    continue;
+                }
+
                 if (hint !== 'stack' && hint !== 'queue') continue;
 
                 const lowerMethod = methodName.toLowerCase();
@@ -440,6 +469,7 @@ export function instrument(code: string, analysis?: import('./codeAnalyzer.js').
                 if (struct.hint === 'stack' || struct.hint === 'queue') {
                     output.push(`    __vt::__container_guard __vt_guard_${varName}("${varName}");`);
                 }
+                // Union-Find 객체는 별도 RAII 가드 없음 — 단순 ALLOC만 emit
             }
             continue;
         }
@@ -545,7 +575,13 @@ export function parseStructs(code: string): StructDef[] {
         const queueFieldNames = ['front', 'rear', 'head', 'tail', 'first', 'last'];
         const hasQueueFields = fields.some(f => queueFieldNames.includes(f.name.toLowerCase()));
 
-        if ((methodSet.has('enqueue') && methodSet.has('dequeue')) ||
+        const hasUFFind = methods.some(isUFFindMethod);
+        const hasUFUnion = methods.some(isUFUnionMethod);
+        const looksLikeUF = hasUFFind && hasUFUnion;
+
+        if (looksLikeUF) {
+            hint = 'unionfind';
+        } else if ((methodSet.has('enqueue') && methodSet.has('dequeue')) ||
             (methodSet.has('push_back') && (methodSet.has('pop_front') || methodSet.has('dequeue'))) ||
             (methodSet.has('push') && methodSet.has('front') && !methodSet.has('pop'))) {
             hint = 'queue';
@@ -575,6 +611,30 @@ export function parseStructs(code: string): StructDef[] {
         structs.push({ name, fields, methods, hint });
     }
     return structs;
+}
+
+/**
+ * Split a function-call argument string on top-level commas only — i.e.
+ * commas inside parentheses, brackets, braces, or angle brackets are ignored.
+ * Used to extract individual arguments from `m[3]` of the method-call regex.
+ */
+function splitTopLevelCommaArgs(args: string): string[] {
+    const parts: string[] = [];
+    let depth = 0;
+    let cur = '';
+    for (let i = 0; i < args.length; i++) {
+        const ch = args[i];
+        if (ch === '(' || ch === '[' || ch === '{' || ch === '<') depth++;
+        else if (ch === ')' || ch === ']' || ch === '}' || ch === '>') depth--;
+        else if (ch === ',' && depth === 0) {
+            parts.push(cur.trim());
+            cur = '';
+            continue;
+        }
+        cur += ch;
+    }
+    if (cur.trim()) parts.push(cur.trim());
+    return parts;
 }
 
 function findStructForVar(varName: string, varTypes: Map<string, string>, structs: StructDef[], currentStruct?: StructDef | null): StructDef | undefined {

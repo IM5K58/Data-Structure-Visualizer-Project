@@ -18,10 +18,15 @@ export type CommandType =
     | 'DELETE_NODE'
     | 'SET_LABEL'
     | 'LOCAL_VAR_UPDATE'
+    | 'STACK_FRAMES'
+    | 'MAP_SET'
+    | 'MAP_REMOVE'
+    | 'UF_UNION'
+    | 'UF_FIND'
     | 'ERROR'
     | 'UNKNOWN';
 
-export type TargetType = 'stack' | 'queue' | 'memory' | 'tree' | 'circular';
+export type TargetType = 'stack' | 'queue' | 'memory' | 'tree' | 'circular' | 'doubly' | 'graph' | 'heap' | 'hashmap' | 'unionfind';
 
 export interface Command {
     type: CommandType;
@@ -37,6 +42,10 @@ export interface Command {
     label?: string;
     raw: string;
     output?: string;
+    /** Source line where this command originated (1-based) */
+    line?: number;
+    /** Call stack frames for STACK_FRAMES events (outermost → innermost) */
+    frames?: string[];
 }
 
 // ===== Data Structure States =====
@@ -81,12 +90,66 @@ export interface CircularState {
     headId: string | null;
 }
 
+export interface DoublyState {
+    type: 'doubly';
+    name: string;
+    nodes: MemoryNode[];
+    headId: string | null;
+}
+
+export interface GraphState {
+    type: 'graph';
+    name: string;
+    nodes: MemoryNode[];
+}
+
+export interface HeapState {
+    type: 'heap';
+    name: string;
+    /** Items in heap-array order. items[0] is the root (max for max-heap, min for min-heap). */
+    items: { id: string; value: number | string | boolean }[];
+}
+
+export interface HashMapEntry {
+    id: string;
+    key: string;
+    value: string;
+}
+
+export interface HashMapState {
+    type: 'hashmap';
+    name: string;
+    entries: HashMapEntry[];
+}
+
+export interface UnionFindOp {
+    id: string;
+    /** 'union' (combine two sets) or 'find' (lookup root); 'makeSet' is the implicit creation */
+    op: 'union' | 'find' | 'makeSet';
+    a: string;
+    b?: string;
+}
+
+export interface UnionFindState {
+    type: 'unionfind';
+    name: string;
+    /** parent[x] = representative element. We materialize this from union ops. */
+    parent: Record<string, string>;
+    /** Recent op log (newest first), bounded for display */
+    ops: UnionFindOp[];
+}
+
 export type DataStructureState =
     | StackState
     | QueueState
     | MemoryState
     | TreeState
-    | CircularState;
+    | CircularState
+    | DoublyState
+    | GraphState
+    | HeapState
+    | HashMapState
+    | UnionFindState;
 
 // ===== Visualizer State =====
 export interface VisualizerState {
@@ -100,6 +163,7 @@ export interface VisualizerState {
     terminalOutput: string; // Synchronized output shown in terminal
     stdin: string;
     localVars: LocalVar[]; // Current local variable snapshot
+    callStack: string[]; // Current call-stack frames (outermost → innermost)
 }
 
 export type VisualizerAction =
