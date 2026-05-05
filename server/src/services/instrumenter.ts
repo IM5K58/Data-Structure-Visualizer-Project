@@ -7,7 +7,7 @@ interface StructDef {
     name: string;
     fields: { name: string; type: string; isPointer: boolean; isArray?: boolean }[];
     methods: string[];
-    hint?: 'stack' | 'queue' | 'node' | 'tree' | 'unionfind';
+    hint?: 'stack' | 'queue' | 'node' | 'tree' | 'unionfind' | 'heap';
     suppressInternals?: boolean; // AI 또는 정적 분석에서 결정
     extendedHint?: 'circular'; // circular_linked_list 전달용
 }
@@ -16,6 +16,26 @@ const UF_FIND_METHODS = new Set(['find', 'findset', 'find_set', 'findroot', 'fin
 const UF_UNION_METHODS = new Set(['union', 'unite', 'unionset', 'union_set', 'merge', 'unionsets']);
 function isUFFindMethod(m: string): boolean { return UF_FIND_METHODS.has(m.toLowerCase()); }
 function isUFUnionMethod(m: string): boolean { return UF_UNION_METHODS.has(m.toLowerCase()); }
+
+// Heap detection signals: any one of these indicates a heap-like class.
+const HEAP_NAME_PATTERN = /(?:^|[_\W])(heap|priority_?queue|priorityqueue|maxheap|minheap|max_heap|min_heap|pq|pqueue)(?:[_\W]|$)/i;
+const HEAP_METHOD_PATTERNS = [
+    /^heapify$/i, /^heapify_?up$/i, /^heapify_?down$/i,
+    /^sift_?up$/i, /^sift_?down$/i,
+    /^bubble_?up$/i, /^bubble_?down$/i, /^percolate_?up$/i, /^percolate_?down$/i,
+    /^push_?heap$/i, /^pop_?heap$/i,
+];
+function looksLikeHeap(name: string, methodSet: Set<string>, methods: string[], fields: { type: string }[]): boolean {
+    if (HEAP_NAME_PATTERN.test(name)) return true;
+    if (methods.some(m => HEAP_METHOD_PATTERNS.some(p => p.test(m)))) return true;
+    // push + pop + (top|peek|min|max) + has an array-like storage = heap-shaped
+    const hasPeek = methodSet.has('top') || methodSet.has('peek') || methodSet.has('min') || methodSet.has('max');
+    const hasPushPop = methodSet.has('push') && methodSet.has('pop');
+    const hasArrayStorage = fields.some(f =>
+        f.type.includes('[') || /^std::vector\b/.test(f.type.trimStart()),
+    );
+    return hasPushPop && hasPeek && hasArrayStorage;
+}
 
 // STL 컨테이너 → 자료구조 힌트 매핑
 // vector: 일반적으로 push_back/pop_back으로 사용되므로 stack-like로 시각화
@@ -110,7 +130,7 @@ export function instrument(code: string, analysis?: import('./codeAnalyzer.js').
             for (const struct of structs) {
                 const ai = analysis.structClassifications[struct.name];
                 if (!ai) continue;
-                const hintMap: Record<string, 'stack' | 'queue' | 'node' | 'tree'> = {
+                const hintMap: Record<string, 'stack' | 'queue' | 'node' | 'tree' | 'heap' | 'unionfind'> = {
                     singly_linked_list: 'node',
                     doubly_linked_list: 'node',
                     circular_linked_list: 'node',
@@ -119,6 +139,10 @@ export function instrument(code: string, analysis?: import('./codeAnalyzer.js').
                     bst: 'tree',
                     stack: 'stack',
                     queue: 'queue',
+                    heap: 'heap',
+                    priority_queue: 'heap',
+                    union_find: 'unionfind',
+                    disjoint_set: 'unionfind',
                 };
                 const mapped = hintMap[ai.hint];
                 if (mapped !== undefined) struct.hint = mapped;
@@ -279,7 +303,7 @@ export function instrument(code: string, analysis?: import('./codeAnalyzer.js').
                     continue;
                 }
 
-                if (hint !== 'stack' && hint !== 'queue') continue;
+                if (hint !== 'stack' && hint !== 'queue' && hint !== 'heap') continue;
 
                 const lowerMethod = methodName.toLowerCase();
                 if (STL_PUSH_METHODS.includes(lowerMethod) && args) {
@@ -296,8 +320,11 @@ export function instrument(code: string, analysis?: import('./codeAnalyzer.js').
         }
 
         // Stack/Queue 컨테이너 내부 메서드 본문에서는 패턴 1-5 계측 억제
-        // suppressInternals 플래그(AI 제공) 또는 stack/queue 힌트일 때 적용
-        if (currentStruct && (currentStruct.suppressInternals ?? (currentStruct.hint === 'stack' || currentStruct.hint === 'queue'))) {
+        // 컨테이너 내부 메서드 본문은 PUSH/POP 외 자체 계측을 억제
+        // (스택/큐/힙은 모두 동일하게 처리)
+        if (currentStruct && (currentStruct.suppressInternals ?? (
+            currentStruct.hint === 'stack' || currentStruct.hint === 'queue' || currentStruct.hint === 'heap'
+        ))) {
             continue;
         }
 
@@ -465,8 +492,8 @@ export function instrument(code: string, analysis?: import('./codeAnalyzer.js').
                 varTypes.set(varName, typeName);
                 const hintAttr = struct.hint ? `, "${struct.hint}"` : '';
                 output.push(`    __vt::alloc(${lineNum}, "${varName}", &${varName}, "${struct.name}"${hintAttr});`);
-                // 큐/스택 객체에 RAII scope guard 추가 — 소멸 시 남은 항목 자동 POP
-                if (struct.hint === 'stack' || struct.hint === 'queue') {
+                // 큐/스택/힙 객체에 RAII scope guard 추가 — 소멸 시 남은 항목 자동 POP
+                if (struct.hint === 'stack' || struct.hint === 'queue' || struct.hint === 'heap') {
                     output.push(`    __vt::__container_guard __vt_guard_${varName}("${varName}");`);
                 }
                 // Union-Find 객체는 별도 RAII 가드 없음 — 단순 ALLOC만 emit
@@ -581,6 +608,8 @@ export function parseStructs(code: string): StructDef[] {
 
         if (looksLikeUF) {
             hint = 'unionfind';
+        } else if (looksLikeHeap(name, methodSet, methods, fields)) {
+            hint = 'heap';
         } else if ((methodSet.has('enqueue') && methodSet.has('dequeue')) ||
             (methodSet.has('push_back') && (methodSet.has('pop_front') || methodSet.has('dequeue'))) ||
             (methodSet.has('push') && methodSet.has('front') && !methodSet.has('pop'))) {

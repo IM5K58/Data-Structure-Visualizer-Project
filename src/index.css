@@ -67,3 +67,19 @@ textarea {
   width: 3px !important;
   margin-left: 3px;
 }
+
+/* Breakpoint dot in the gutter glyph margin. */
+.monaco-breakpoint-glyph {
+  background: var(--color-accent-red);
+  border-radius: 50%;
+  width: 10px !important;
+  height: 10px !important;
+  margin-left: 5px;
+  margin-top: 5px;
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.55);
+  cursor: pointer;
+}
+.monaco-breakpoint-glyph::before {
+  content: '';
+  display: block;
+}

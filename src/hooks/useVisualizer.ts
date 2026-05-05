@@ -32,6 +32,7 @@ const initialState: VisualizerState = {
     stdin: '',
     localVars: [],
     callStack: [],
+    breakpoints: [],
 };
 
 function findOrCreateStructure(
@@ -452,6 +453,17 @@ function reducer(state: VisualizerState, action: VisualizerAction): VisualizerSt
             return { ...state, stdin: action.stdin };
         case 'SET_LOCAL_VARS':
             return { ...state, localVars: action.localVars };
+        case 'TOGGLE_BREAKPOINT': {
+            const has = state.breakpoints.includes(action.line);
+            return {
+                ...state,
+                breakpoints: has
+                    ? state.breakpoints.filter(l => l !== action.line)
+                    : [...state.breakpoints, action.line].sort((a, b) => a - b),
+            };
+        }
+        case 'CLEAR_BREAKPOINTS':
+            return { ...state, breakpoints: [] };
         default:
             return state;
     }
@@ -472,6 +484,14 @@ export function useVisualizer() {
 
     const stdinRef = useRef(state.stdin);
     stdinRef.current = state.stdin;
+
+    // Refs for the run-loop to read latest values without re-creating the interval.
+    const breakpointsRef = useRef<number[]>(state.breakpoints);
+    breakpointsRef.current = state.breakpoints;
+    const commandHistoryRef = useRef<Command[]>(state.commandHistory);
+    commandHistoryRef.current = state.commandHistory;
+    const currentStepRef = useRef<number>(state.currentStep);
+    currentStepRef.current = state.currentStep;
 
     const loadCode = useCallback(async (code: string) => {
         stopAutoRun();
@@ -518,13 +538,37 @@ export function useVisualizer() {
     }, []);
 
 
+    /**
+     * Step the run loop, then check whether we just *transitioned into* a
+     * breakpoint line. We pause only on transition (line A → line B where B is
+     * a breakpoint), not while we sit on the same breakpoint line — otherwise
+     * a single breakpoint would never let execution continue past it.
+     */
+    const tickRunLoop = useCallback(() => {
+        const beforeStep = currentStepRef.current;
+        // Pre-step current line
+        const before = beforeStep >= 0 ? commandHistoryRef.current[beforeStep]?.line ?? null : null;
+
+        dispatch({ type: 'STEP' });
+
+        // Inspect the step we just landed on (currentStepRef updates next render,
+        // so peek directly at the next index).
+        const after = beforeStep + 1;
+        const nextLine = commandHistoryRef.current[after]?.line ?? null;
+        if (
+            nextLine !== null &&
+            nextLine !== before &&
+            breakpointsRef.current.includes(nextLine)
+        ) {
+            stopAutoRun();
+        }
+    }, [stopAutoRun]);
+
     const run = useCallback(() => {
         stopAutoRun();
         dispatch({ type: 'SET_RUNNING', isRunning: true });
-        intervalRef.current = setInterval(() => {
-            dispatch({ type: 'STEP' });
-        }, speedRef.current);
-    }, [stopAutoRun]);
+        intervalRef.current = setInterval(tickRunLoop, speedRef.current);
+    }, [stopAutoRun, tickRunLoop]);
 
     const reset = useCallback(() => {
         stopAutoRun();
@@ -536,14 +580,20 @@ export function useVisualizer() {
         if (state.isRunning) {
             stopAutoRun();
             dispatch({ type: 'SET_RUNNING', isRunning: true });
-            intervalRef.current = setInterval(() => {
-                dispatch({ type: 'STEP' });
-            }, ms);
+            intervalRef.current = setInterval(tickRunLoop, ms);
         }
-    }, [state.isRunning, stopAutoRun]);
+    }, [state.isRunning, stopAutoRun, tickRunLoop]);
 
     const setStdin = useCallback((stdin: string) => {
         dispatch({ type: 'SET_STDIN', stdin });
+    }, []);
+
+    const toggleBreakpoint = useCallback((line: number) => {
+        dispatch({ type: 'TOGGLE_BREAKPOINT', line });
+    }, []);
+
+    const clearBreakpoints = useCallback(() => {
+        dispatch({ type: 'CLEAR_BREAKPOINTS' });
     }, []);
 
     // Source line of the most recently executed command, if any.
@@ -606,6 +656,8 @@ export function useVisualizer() {
         setStdin,
         currentLine,
         lastChange,
+        toggleBreakpoint,
+        clearBreakpoints,
     };
 }
 

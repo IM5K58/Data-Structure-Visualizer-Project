@@ -10,7 +10,7 @@ import { useVisualizer } from './hooks/useVisualizer';
 import { AnimatePresence } from 'framer-motion';
 
 function App() {
-  const { state, loadCode, step, stepBack, run, reset, stopAutoRun, setSpeed, setStdin, currentLine, lastChange } = useVisualizer();
+  const { state, loadCode, step, stepBack, run, reset, stopAutoRun, setSpeed, setStdin, currentLine, lastChange, toggleBreakpoint } = useVisualizer();
   const [showHelp, setShowHelp] = useState(false);
   const codeRef = useRef('');
 
@@ -213,7 +213,12 @@ function App() {
 
         <aside ref={rightPanelRef} style={{ width: `${panelWidth}px` }} className="shrink-0 border-l border-border bg-bg-secondary/30 flex flex-col bg-bg-panel/40 backdrop-blur-xl">
           <div style={{ height: `${codeHeight}px` }} className="shrink-0 p-4 flex flex-col">
-            <CodeInput onCodeChange={handleCodeChange} currentLine={currentLine} />
+            <CodeInput
+              onCodeChange={handleCodeChange}
+              currentLine={currentLine}
+              breakpoints={state.breakpoints}
+              onToggleBreakpoint={toggleBreakpoint}
+            />
           </div>
 
           <div onMouseDown={startResizeV} className="h-[5px] cursor-row-resize bg-border hover:bg-accent-cyan/40 active:bg-accent-cyan/60 transition-colors duration-150 shrink-0 relative group">

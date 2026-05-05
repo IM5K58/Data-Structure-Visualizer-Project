@@ -164,6 +164,7 @@ export interface VisualizerState {
     stdin: string;
     localVars: LocalVar[]; // Current local variable snapshot
     callStack: string[]; // Current call-stack frames (outermost → innermost)
+    breakpoints: number[]; // Source lines (1-based) where execution should pause
 }
 
 export type VisualizerAction =
@@ -177,4 +178,6 @@ export type VisualizerAction =
     | { type: 'SET_STDOUT'; stdout: string }
     | { type: 'SET_STDIN'; stdin: string }
     | { type: 'LOAD_COMMANDS'; commands: Command[] }
-    | { type: 'SET_LOCAL_VARS'; localVars: LocalVar[] };
+    | { type: 'SET_LOCAL_VARS'; localVars: LocalVar[] }
+    | { type: 'TOGGLE_BREAKPOINT'; line: number }
+    | { type: 'CLEAR_BREAKPOINTS' };

@@ -6,6 +6,10 @@ interface Props {
     onCodeChange: (code: string) => void;
     /** 1-based source line currently being executed; null = none */
     currentLine?: number | null;
+    /** 1-based source lines with breakpoints set */
+    breakpoints?: number[];
+    /** Toggle a breakpoint at the given source line */
+    onToggleBreakpoint?: (line: number) => void;
 }
 
 const DEFAULT_CODE = `#include <iostream>
@@ -40,11 +44,14 @@ int main() {
     return 0;
 }`;
 
-export default function CodeInput({ onCodeChange, currentLine }: Props) {
+export default function CodeInput({ onCodeChange, currentLine, breakpoints, onToggleBreakpoint }: Props) {
     const [code, setCode] = useState(DEFAULT_CODE);
     const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
     const monacoRef = useRef<Monaco | null>(null);
     const decorationsRef = useRef<editor.IEditorDecorationsCollection | null>(null);
+    const breakpointsRef = useRef<editor.IEditorDecorationsCollection | null>(null);
+    const onToggleBreakpointRef = useRef(onToggleBreakpoint);
+    onToggleBreakpointRef.current = onToggleBreakpoint;
 
     useEffect(() => {
         onCodeChange(code);
@@ -78,6 +85,28 @@ export default function CodeInput({ onCodeChange, currentLine }: Props) {
         }
     }, [currentLine]);
 
+    // Render breakpoint glyphs in the gutter.
+    useEffect(() => {
+        const ed = editorRef.current;
+        const monaco = monacoRef.current;
+        if (!ed || !monaco) return;
+
+        const decos: editor.IModelDeltaDecoration[] = (breakpoints ?? []).map(line => ({
+            range: new monaco.Range(line, 1, line, 1),
+            options: {
+                isWholeLine: false,
+                glyphMarginClassName: 'monaco-breakpoint-glyph',
+                glyphMarginHoverMessage: { value: `Breakpoint @ line ${line}` },
+            },
+        }));
+
+        if (!breakpointsRef.current) {
+            breakpointsRef.current = ed.createDecorationsCollection(decos);
+        } else {
+            breakpointsRef.current.set(decos);
+        }
+    }, [breakpoints]);
+
     const handleEditorWillMount = (monaco: Monaco) => {
         monaco.editor.defineTheme('vs-visualizer', {
             base: 'vs-dark',
@@ -110,6 +139,19 @@ export default function CodeInput({ onCodeChange, currentLine }: Props) {
     const handleEditorMount: OnMount = (ed, monaco) => {
         editorRef.current = ed;
         monacoRef.current = monaco;
+
+        // Click on the gutter (glyph margin or line numbers) to toggle a breakpoint.
+        ed.onMouseDown((e) => {
+            const t = e.target.type;
+            const GLYPH = monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN;
+            const LINE_NO = monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS;
+            if (t === GLYPH || t === LINE_NO) {
+                const line = e.target.position?.lineNumber;
+                if (line && onToggleBreakpointRef.current) {
+                    onToggleBreakpointRef.current(line);
+                }
+            }
+        });
     };
 
     return (
@@ -143,6 +185,7 @@ export default function CodeInput({ onCodeChange, currentLine }: Props) {
                     onChange={handleEditorChange}
                     options={{
                         minimap: { enabled: false },
+                        glyphMargin: true,
                         fontSize: 14,
                         fontFamily: "'JetBrains Mono', 'Fira Code', 'Iosevka', monospace",
                         fontLigatures: true,
