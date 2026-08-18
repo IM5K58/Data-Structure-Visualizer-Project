@@ -3,15 +3,23 @@ import express from 'express';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import compileRouter from './routes/compile.js';
-import { initializePCH } from './services/compiler.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3001');
 
 // If deployed behind a proxy/load balancer (Render, Vercel, Cloudflare),
 // trust X-Forwarded-For so rate-limit keys on the real client IP.
+//
+// Express treats the value's TYPE as meaning: a boolean/number is a hop config,
+// a string is parsed as an IP/subnet list. Passing the raw env var meant
+// TRUST_PROXY=true became the *string* "true" and was parsed as an IP list.
 if (process.env.TRUST_PROXY) {
-    app.set('trust proxy', process.env.TRUST_PROXY);
+    const raw = process.env.TRUST_PROXY.trim();
+    const hops = Number(raw);
+    if (raw === 'true') app.set('trust proxy', true);
+    else if (raw === 'false') app.set('trust proxy', false);
+    else if (Number.isInteger(hops) && hops >= 0) app.set('trust proxy', hops);
+    else app.set('trust proxy', raw); // explicit IP / subnet list
 }
 
 // Middleware
@@ -61,6 +69,4 @@ app.listen(PORT, () => {
     console.log(`   Server:  http://localhost:${PORT}`);
     console.log(`   Piston:  ${process.env.PISTON_URL || 'http://localhost:2000'}`);
     console.log(`   Health:  http://localhost:${PORT}/api/health\n`);
-    // 서버 시작 직후 백그라운드에서 PCH 미리 컴파일
-    initializePCH();
 });

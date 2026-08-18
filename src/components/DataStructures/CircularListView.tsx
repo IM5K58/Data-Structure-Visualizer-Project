@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { memo, useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import type { CircularState, MemoryNode } from '../../types';
 import type { NodeHighlight } from '../Visualizer';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useNewIds, usePulse } from '../../hooks/usePulse';
 
 interface Props {
     data: CircularState;
@@ -82,33 +83,21 @@ function computeCircularLayout(nodes: MemoryNode[], headId: string | null): Layo
     });
 }
 
-export default function CircularListView({ data, highlight }: Props) {
+function CircularListView({ data, highlight }: Props) {
     const mainRef = useRef<HTMLDivElement>(null);
     const [scale, setScale] = useState(1);
     const [offset, setOffset] = useState({ x: 0, y: 0 });
     const isDragging = useRef(false);
     const lastPos = useRef({ x: 0, y: 0 });
-    const prevNodeIds = useRef<Set<string>>(new Set());
-    const [newNodeIds, setNewNodeIds] = useState<Set<string>>(new Set());
     const hasAutocentered = useRef(false);
 
-    const [pulse, setPulse] = useState<{ nodeId: string | null; property: string | null } | null>(null);
-    useEffect(() => {
-        if (!highlight || !highlight.nodeId) return;
-        setPulse({ nodeId: highlight.nodeId, property: highlight.property });
-        const t = setTimeout(() => setPulse(null), 700);
-        return () => clearTimeout(t);
-    }, [highlight]);
+    const pulse = usePulse(
+        highlight?.nodeId ? { nodeId: highlight.nodeId, property: highlight.property } : null,
+        highlight
+    );
 
-    useEffect(() => {
-        const currentIds = new Set(data.nodes.map(n => n.id));
-        const newlyAdded = new Set([...currentIds].filter(id => !prevNodeIds.current.has(id)));
-        if (newlyAdded.size > 0) {
-            setNewNodeIds(newlyAdded);
-            setTimeout(() => setNewNodeIds(new Set()), 1000);
-        }
-        prevNodeIds.current = currentIds;
-    }, [data.nodes]);
+    const nodeIds = useMemo(() => data.nodes.map(n => n.id), [data.nodes]);
+    const newNodeIds = useNewIds(nodeIds, 1000);
 
     useEffect(() => {
         const container = mainRef.current;
@@ -219,7 +208,7 @@ export default function CircularListView({ data, highlight }: Props) {
             }
         }
         return result;
-    }, [layoutNodes, newNodeIds, allIds, order, posMap, data.nodes]);
+    }, [newNodeIds, allIds, order, posMap, data.nodes]);
 
     if (!data.nodes || data.nodes.length === 0) {
         return <div className="p-4 text-text-muted text-xs font-mono">/* Circular List Empty */</div>;
@@ -395,3 +384,5 @@ export default function CircularListView({ data, highlight }: Props) {
         </div>
     );
 }
+
+export default memo(CircularListView);

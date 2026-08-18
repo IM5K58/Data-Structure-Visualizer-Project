@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { memo, useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import type { TreeState, MemoryNode } from '../../types';
 import type { NodeHighlight } from '../Visualizer';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useNewIds, usePulse } from '../../hooks/usePulse';
 
 interface Props {
     data: TreeState;
@@ -109,35 +110,23 @@ function computeLayout(nodes: MemoryNode[], rootId: string | null): LayoutNode[]
     return Array.from(positioned.values());
 }
 
-export default function TreeChart({ data, highlight }: Props) {
+function TreeChart({ data, highlight }: Props) {
     const mainRef = useRef<HTMLDivElement>(null);
     const [scale, setScale] = useState(1);
     const [offset, setOffset] = useState({ x: 0, y: 0 });
     const isDragging = useRef(false);
     const lastPos = useRef({ x: 0, y: 0 });
-    const prevNodeIds = useRef<Set<string>>(new Set());
-    const [newNodeIds, setNewNodeIds] = useState<Set<string>>(new Set());
     const hasAutocentered = useRef(false);
 
     // Pulse the most recently changed node + field for ~700ms after a step.
-    const [pulse, setPulse] = useState<{ nodeId: string | null; property: string | null } | null>(null);
-    useEffect(() => {
-        if (!highlight || !highlight.nodeId) return;
-        setPulse({ nodeId: highlight.nodeId, property: highlight.property });
-        const t = setTimeout(() => setPulse(null), 700);
-        return () => clearTimeout(t);
-    }, [highlight]);
+    const pulse = usePulse(
+        highlight?.nodeId ? { nodeId: highlight.nodeId, property: highlight.property } : null,
+        highlight
+    );
 
     // Track new nodes for entry animation
-    useEffect(() => {
-        const currentIds = new Set(data.nodes.map(n => n.id));
-        const newlyAdded = new Set([...currentIds].filter(id => !prevNodeIds.current.has(id)));
-        if (newlyAdded.size > 0) {
-            setNewNodeIds(newlyAdded);
-            setTimeout(() => setNewNodeIds(new Set()), 1000);
-        }
-        prevNodeIds.current = currentIds;
-    }, [data.nodes]);
+    const nodeIds = useMemo(() => data.nodes.map(n => n.id), [data.nodes]);
+    const newNodeIds = useNewIds(nodeIds, 1000);
 
     // Ctrl+Wheel zoom
     useEffect(() => {
@@ -389,3 +378,5 @@ export default function TreeChart({ data, highlight }: Props) {
         </div>
     );
 }
+
+export default memo(TreeChart);

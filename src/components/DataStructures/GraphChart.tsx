@@ -1,7 +1,8 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { memo, useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import type { GraphState, MemoryNode } from '../../types';
 import type { NodeHighlight } from '../Visualizer';
 import { motion, AnimatePresence } from 'framer-motion';
+import { usePulse } from '../../hooks/usePulse';
 
 interface Props {
     data: GraphState;
@@ -69,20 +70,17 @@ function buildEdges(nodes: MemoryNode[]): EdgeRender[] {
     return edges;
 }
 
-export default function GraphChart({ data, highlight }: Props) {
+function GraphChart({ data, highlight }: Props) {
     const containerRef = useRef<HTMLDivElement>(null);
     const [scale, setScale] = useState(1);
     const [offset, setOffset] = useState({ x: 0, y: 0 });
     const isDragging = useRef(false);
     const lastPos = useRef({ x: 0, y: 0 });
 
-    const [pulse, setPulse] = useState<{ nodeId: string | null; property: string | null } | null>(null);
-    useEffect(() => {
-        if (!highlight || !highlight.nodeId) return;
-        setPulse({ nodeId: highlight.nodeId, property: highlight.property });
-        const t = setTimeout(() => setPulse(null), 700);
-        return () => clearTimeout(t);
-    }, [highlight]);
+    const pulse = usePulse(
+        highlight?.nodeId ? { nodeId: highlight.nodeId, property: highlight.property } : null,
+        highlight
+    );
 
     // Layout dimensions — picked to comfortably fit up to ~12 nodes; the user
     // can pan/zoom for larger graphs.
@@ -93,7 +91,13 @@ export default function GraphChart({ data, highlight }: Props) {
     );
     const edges = useMemo(() => buildEdges(data.nodes), [data.nodes]);
 
-    const posOf = (id: string) => layout.find(p => p.node.id === id);
+    // Indexed lookup: drawing E edges each needing two endpoint lookups was
+    // O(V·E) with a linear `find` per call.
+    const posById = useMemo(
+        () => new Map(layout.map(p => [p.node.id, p])),
+        [layout],
+    );
+    const posOf = (id: string) => posById.get(id);
 
     // ── Pan / Zoom ─────────────────────────────────────────────────────────
     const onMouseDown = (e: React.MouseEvent) => {
@@ -310,3 +314,5 @@ export default function GraphChart({ data, highlight }: Props) {
         </div>
     );
 }
+
+export default memo(GraphChart);

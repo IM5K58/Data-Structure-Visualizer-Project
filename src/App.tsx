@@ -102,22 +102,24 @@ function App() {
   }, []);
 
   const handleRun = useCallback(async () => {
+    if (state.isLoading) return;
     if (state.currentStep === -1) {
       const success = await loadCode(codeRef.current);
       if (success) run();
     } else {
       run();
     }
-  }, [run, loadCode, state.currentStep]);
+  }, [run, loadCode, state.currentStep, state.isLoading]);
 
   const handleStep = useCallback(async () => {
+    if (state.isLoading) return;
     if (state.currentStep === -1) {
       const success = await loadCode(codeRef.current);
       if (success) step();
     } else {
       step();
     }
-  }, [step, loadCode, state.currentStep]);
+  }, [step, loadCode, state.currentStep, state.isLoading]);
 
   const handleReset = useCallback(() => {
     reset();
@@ -192,8 +194,9 @@ function App() {
               </div>
             </div>
 
-            <Terminal 
+            <Terminal
               terminalOutput={state.terminalOutput}
+              fullStdout={state.stdout}
               stdin={state.stdin}
               setStdin={setStdin}
               currentStep={state.currentStep}
@@ -242,6 +245,7 @@ function App() {
               totalSteps={state.commandHistory.length}
               isLoading={state.isLoading}
               error={state.error}
+              warning={state.warning}
             />
             {state.callStack.length > 0 && (
               <CallStackPanel frames={state.callStack} />

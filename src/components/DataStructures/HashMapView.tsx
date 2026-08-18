@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { memo, useMemo } from 'react';
 import type { HashMapState } from '../../types';
 import type { NodeHighlight } from '../Visualizer';
 import { motion, AnimatePresence } from 'framer-motion';
+import { usePulse } from '../../hooks/usePulse';
 
 interface Props {
     data: HashMapState;
@@ -20,28 +21,35 @@ function bucketOf(key: string, numBuckets: number): number {
     return Math.abs(h) % Math.max(1, numBuckets);
 }
 
-export default function HashMapView({ data, highlight }: Props) {
-    const N = data.entries.length;
-    const numBuckets = Math.max(4, Math.ceil(N * 1.3));
+/**
+ * Bucket count grows in powers of two at a 0.75 load factor. A capacity that
+ * changed on every insert (e.g. `ceil(N * 1.3)`) would move every existing entry
+ * to a different bucket each time, re-animating the whole map on a single set.
+ */
+function bucketCountFor(entryCount: number): number {
+    let capacity = 4;
+    while (entryCount > capacity * 0.75) capacity *= 2;
+    return capacity;
+}
 
-    const [pulseKey, setPulseKey] = useState<string | null>(null);
-    useEffect(() => {
-        if (!highlight || (highlight.kind !== 'MAP_SET' && highlight.kind !== 'MAP_REMOVE')) return;
-        // The reducer stored the key in command.property; Visualizer's NodeHighlight
-        // forwards it as `property`.
-        if (highlight.property) {
-            setPulseKey(highlight.property);
-            const t = setTimeout(() => setPulseKey(null), 700);
-            return () => clearTimeout(t);
+function HashMapView({ data, highlight }: Props) {
+    // The reducer stored the key in command.property; Visualizer's NodeHighlight
+    // forwards it as `property`.
+    const pulseTarget = highlight
+        && (highlight.kind === 'MAP_SET' || highlight.kind === 'MAP_REMOVE')
+        ? highlight.property
+        : null;
+    const pulseKey = usePulse(pulseTarget, highlight);
+
+    const { buckets, numBuckets } = useMemo(() => {
+        const count = bucketCountFor(data.entries.length);
+        const grouped: { idx: number; entries: HashMapState['entries'] }[] = [];
+        for (let i = 0; i < count; i++) grouped.push({ idx: i, entries: [] });
+        for (const e of data.entries) {
+            grouped[bucketOf(e.key, count)].entries.push(e);
         }
-    }, [highlight]);
-
-    const buckets: { idx: number; entries: HashMapState['entries'] }[] = [];
-    for (let i = 0; i < numBuckets; i++) buckets.push({ idx: i, entries: [] });
-    for (const e of data.entries) {
-        const b = bucketOf(e.key, numBuckets);
-        buckets[b].entries.push(e);
-    }
+        return { buckets: grouped, numBuckets: count };
+    }, [data.entries]);
 
     return (
         <div className="flex flex-col items-center w-full h-full justify-center gap-3 px-4 overflow-auto">
@@ -88,12 +96,14 @@ export default function HashMapView({ data, highlight }: Props) {
             </div>
 
             <div className="text-[10px] font-mono text-text-muted/60 mt-1">
-                size: <span className="text-pink-400 font-bold">{N}</span>
+                size: <span className="text-pink-400 font-bold">{data.entries.length}</span>
                 <span className="mx-2">·</span>
                 buckets: <span className="text-pink-300">{numBuckets}</span>
                 <span className="mx-2">·</span>
-                load: <span className="text-pink-300">{(N / numBuckets).toFixed(2)}</span>
+                load: <span className="text-pink-300">{(data.entries.length / numBuckets).toFixed(2)}</span>
             </div>
         </div>
     );
 }
+
+export default memo(HashMapView);

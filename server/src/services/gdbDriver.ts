@@ -4,7 +4,7 @@
  */
 
 import { spawn, ChildProcess } from 'child_process';
-import { writeFile, readFile, rm } from 'fs/promises';
+import { writeFile, rm, stat, open } from 'fs/promises';
 import { rlimitWrapperPrefix } from './compiler.js';
 
 const GDB_PATH = process.env.GDB_PATH ?? (process.platform === 'win32'
@@ -12,6 +12,12 @@ const GDB_PATH = process.env.GDB_PATH ?? (process.platform === 'win32'
     : '/usr/bin/gdb');
 
 const MAX_STEPS = 500;
+/** Wall-clock budget for one whole trace session, independent of the step cap. */
+const SESSION_BUDGET_MS = parseInt(process.env.GDB_SESSION_BUDGET_MS ?? `${45_000}`);
+/** Cap on how much of the traced program's stdout we read back. */
+const MAX_OUTPUT_BYTES = parseInt(process.env.MAX_OUTPUT_BYTES ?? `${1024 * 1024}`);
+/** Set VERBOSE_MI_LOG=true to echo every GDB/MI line — very noisy, debugging only. */
+const VERBOSE_MI_LOG = process.env.VERBOSE_MI_LOG === 'true';
 
 // ===== Public Types =====
 
@@ -322,7 +328,9 @@ export class GDBDriver {
         this.rawBuf = lines.pop() ?? '';
         for (const line of lines) {
             const trimmed = line.trim();
-            if (trimmed) console.log('  [GDB raw]', trimmed);
+            // Off by default: this is thousands of lines per request, and the MI
+            // payloads echo user source and variable values into the logs.
+            if (trimmed && VERBOSE_MI_LOG) console.log('  [GDB raw]', trimmed);
             this.handleLine(trimmed);
         }
     }
@@ -726,9 +734,19 @@ export async function runGDBSession(
 
         const snapshots: GDBSnapshot[] = [];
         let steps = 0;
+        // MAX_STEPS alone does not bound wall-clock time: each step issues one
+        // `exec-next` plus up to ~50 pointer inspections and per-container
+        // evaluations, each with its own MI timeout. Without a deadline a single
+        // request can hold a GDB process for many minutes.
+        const deadline = Date.now() + SESSION_BUDGET_MS;
 
         while (steps < MAX_STEPS) {
             if (isTerminalReason(stop.reason)) break;
+            if (Date.now() > deadline) {
+                console.warn(`  [GDB] session budget of ${SESSION_BUDGET_MS}ms exhausted after ${steps} steps`);
+                timedOut = true;
+                break;
+            }
 
             // Skip CRT/runtime frames — only collect snapshots inside user source
             if (stop.file && userSrcFile && stop.file !== userSrcFile) {
@@ -855,8 +873,24 @@ export async function runGDBSession(
 
         await driver.quit();
 
+        // The redirect file lives in /dev/shm (RAM-backed) on Linux, so a program
+        // printing in a tight loop can fill memory. Read at most MAX_OUTPUT_BYTES.
         let programOutput = '';
-        try { programOutput = await readFile(stdoutFile, 'utf-8'); } catch { /* no output */ }
+        try {
+            const { size } = await stat(stdoutFile);
+            const handle = await open(stdoutFile, 'r');
+            try {
+                const length = Math.min(size, MAX_OUTPUT_BYTES);
+                const buf = Buffer.alloc(length);
+                await handle.read(buf, 0, length, 0);
+                programOutput = buf.toString('utf-8');
+                if (size > MAX_OUTPUT_BYTES) {
+                    programOutput += `\n[output truncated at ${MAX_OUTPUT_BYTES} bytes]`;
+                }
+            } finally {
+                await handle.close();
+            }
+        } catch { /* no output */ }
 
         return { snapshots, programOutput, timedOut };
 

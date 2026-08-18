@@ -23,7 +23,6 @@ COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev
 
 COPY --from=builder /app/dist ./dist
-COPY sandbox/ ./sandbox/
 COPY seccomp-profile.json ./seccomp-profile.json
 
 ENV PORT=3001
@@ -39,7 +38,11 @@ USER sandbox
 
 EXPOSE 3001
 
-# Recommended runtime invocation:
+# This image runs arbitrary user C++. It MUST be started with resource and
+# syscall restrictions — `docker run image` with no flags is an unbounded remote
+# code execution endpoint. Prefer `docker compose up compiler`, which applies
+# them all; the equivalent raw invocation is:
+#
 #   docker run \
 #     --read-only --tmpfs /tmp:exec --tmpfs /dev/shm:exec \
 #     --memory=512m --cpus=1 --pids-limit=128 \
@@ -47,6 +50,9 @@ EXPOSE 3001
 #     --security-opt seccomp=/app/seccomp-profile.json \
 #     -p 3001:3001 server-image
 #
-# (When ptrace is denied by the platform, set USE_GDB=false to use
-# the instrumenter fallback and restrict ptrace in seccomp too.)
+# The process additionally refuses to start on Linux if prlimit is missing,
+# so per-process CPU/memory/file-size caps can never be silently dropped.
+#
+# (When ptrace is denied by the platform, set USE_GDB=false: the program
+# still runs and returns its output, just without a step trace.)
 CMD ["node", "dist/index.js"]

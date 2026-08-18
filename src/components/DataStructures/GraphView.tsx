@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import type { MemoryState } from '../../types';
+import { memo, useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import type { MemoryNode, MemoryState } from '../../types';
 import type { NodeHighlight } from '../Visualizer';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useNewIds, usePulse } from '../../hooks/usePulse';
 
 interface Props {
     data: MemoryState;
@@ -18,6 +19,25 @@ interface Edge {
     isNew?: boolean;
 }
 
+/** Cheap structural compare — avoids JSON.stringify on every animation frame. */
+function edgesEqual(a: readonly Edge[], b: readonly Edge[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+        const p = a[i], q = b[i];
+        if (
+            p.id !== q.id || p.x1 !== q.x1 || p.y1 !== q.y1
+            || p.x2 !== q.x2 || p.y2 !== q.y2
+            || p.targetSide !== q.targetSide || p.isNew !== q.isNew
+        ) return false;
+    }
+    return true;
+}
+
+/** Stop re-measuring once layout has been still this long (framer-motion springs settle). */
+const SETTLE_MS = 400;
+/** Absolute cap on a single measurement burst, in case something animates forever. */
+const MAX_MEASURE_MS = 3000;
+
 function getElementLocalPos(el: HTMLElement, targetParent: HTMLElement) {
     let top = 0;
     let left = 0;
@@ -30,26 +50,24 @@ function getElementLocalPos(el: HTMLElement, targetParent: HTMLElement) {
     return { x: left, y: top, width: el.offsetWidth, height: el.offsetHeight };
 }
 
-export default function GraphView({ data, highlight }: Props) {
+function GraphView({ data, highlight }: Props) {
     const containerRef = useRef<HTMLDivElement>(null);
     const mainContainerRef = useRef<HTMLDivElement>(null);
     const [edges, setEdges] = useState<Edge[]>([]);
     const edgesRef = useRef<Edge[]>([]);
-    const prevNodeIds = useRef<Set<string>>(new Set());
-    const [newNodeIds, setNewNodeIds] = useState<Set<string>>(new Set());
     const [scale, setScale] = useState(1);
     const [offset, setOffset] = useState({ x: 0, y: 0 });
     const isDraggingPan = useRef(false);
     const lastPos = useRef({ x: 0, y: 0 });
 
+    const nodeIds = useMemo(() => data.nodes.map(n => n.id), [data.nodes]);
+    const newNodeIds = useNewIds(nodeIds, 1000);
+
     // Pulse the most recently changed node + field for ~700ms after a step.
-    const [pulse, setPulse] = useState<{ nodeId: string | null; property: string | null } | null>(null);
-    useEffect(() => {
-        if (!highlight || !highlight.nodeId) return;
-        setPulse({ nodeId: highlight.nodeId, property: highlight.property });
-        const t = setTimeout(() => setPulse(null), 700);
-        return () => clearTimeout(t);
-    }, [highlight]);
+    const pulse = usePulse(
+        highlight?.nodeId ? { nodeId: highlight.nodeId, property: highlight.property } : null,
+        highlight
+    );
 
     const handleMouseDown = (e: React.MouseEvent) => {
         if (e.button === 0) {
@@ -111,14 +129,9 @@ export default function GraphView({ data, highlight }: Props) {
         };
     }, [data.nodes, data.name]);
 
-    // Final safety check for data integrity
-    if (!data.nodes || !Array.isArray(data.nodes)) {
-        return <div className="p-4 text-text-muted">No memory nodes to display.</div>;
-    }
-
     // Calculate logical order of nodes
     const orderedNodes = useMemo(() => {
-        const result: typeof data.nodes = [];
+        const result: MemoryNode[] = [];
         const inDegree = new Map<string, number>();
         const adj = new Map<string, string[]>();
 
@@ -174,17 +187,8 @@ export default function GraphView({ data, highlight }: Props) {
         return result;
     }, [data.nodes, isStackMode]);
 
-    // Track new nodes and handle wheel listener
+    // Ctrl+wheel zoom
     useEffect(() => {
-        const currentIds = new Set(data.nodes.map(n => n.id));
-        const newlyAdded = new Set([...currentIds].filter(id => !prevNodeIds.current.has(id)));
-        
-        if (newlyAdded.size > 0) {
-            setNewNodeIds(newlyAdded);
-            setTimeout(() => setNewNodeIds(new Set()), 1000);
-        }
-        prevNodeIds.current = currentIds;
-
         const container = mainContainerRef.current;
         if (!container) return;
 
@@ -199,15 +203,22 @@ export default function GraphView({ data, highlight }: Props) {
 
         container.addEventListener('wheel', onWheelNative, { passive: false });
         return () => container.removeEventListener('wheel', onWheelNative);
-    }, [data.nodes]);
+    }, []);
 
-    // Update edge coordinates
+    // Edge endpoints are read out of the live DOM because node boxes are laid out
+    // by flexbox and animated by framer-motion. We re-measure in an animation-frame
+    // burst that stops once the layout has held still for SETTLE_MS, instead of
+    // polling forever — the old version ran a forced-layout pass every frame for
+    // the entire lifetime of the component.
     useEffect(() => {
-        let animationFrameId: number;
-        const calculateEdges = () => {
+        let frameId: number | null = null;
+        let lastChangeTs = 0;
+        let startTs = 0;
+
+        const measure = (): Edge[] | null => {
             const innerDiv = containerRef.current;
-            if (!innerDiv) return;
-            
+            if (!innerDiv) return null;
+
             const newEdges: Edge[] = [];
 
             data.nodes.forEach(node => {
@@ -273,15 +284,43 @@ export default function GraphView({ data, highlight }: Props) {
                 });
             });
 
-            if (JSON.stringify(newEdges) !== JSON.stringify(edgesRef.current)) {
-                setEdges(newEdges);
-                edgesRef.current = newEdges;
-            }
-            animationFrameId = requestAnimationFrame(calculateEdges);
+            return newEdges;
         };
-        calculateEdges();
-        return () => cancelAnimationFrame(animationFrameId);
-    }, [data.nodes, newNodeIds, isStackMode, isLinkedListMode]);
+
+        const tick = (ts: number) => {
+            frameId = null;
+            if (!startTs) startTs = ts;
+            if (!lastChangeTs) lastChangeTs = ts;
+
+            const next = measure();
+            if (next && !edgesEqual(next, edgesRef.current)) {
+                edgesRef.current = next;
+                setEdges(next);
+                lastChangeTs = ts;
+            }
+
+            const settled = ts - lastChangeTs >= SETTLE_MS;
+            const expired = ts - startTs >= MAX_MEASURE_MS;
+            if (!settled && !expired) frameId = requestAnimationFrame(tick);
+        };
+
+        const restart = () => {
+            startTs = 0;
+            lastChangeTs = 0;
+            if (frameId === null) frameId = requestAnimationFrame(tick);
+        };
+
+        restart();
+
+        // Panel resizes change the flex layout without changing any React state.
+        const observer = new ResizeObserver(restart);
+        if (containerRef.current) observer.observe(containerRef.current);
+
+        return () => {
+            observer.disconnect();
+            if (frameId !== null) cancelAnimationFrame(frameId);
+        };
+    }, [data.nodes, newNodeIds, isStackMode, isLinkedListMode, scale, offset]);
 
     const drawPath = (e: Edge) => {
         const { x1, y1, x2, y2, targetSide } = e;
@@ -313,7 +352,8 @@ export default function GraphView({ data, highlight }: Props) {
         const cp1Weight = cp1WeightValue;
         const cp2Weight = Math.max(Math.abs(dx) / 1.8, Math.abs(dy) / 2, 60);
 
-        let cp1x = x1 + cp1Weight, cp1y = y1 - archHeight;
+        let cp1x = x1 + cp1Weight;
+        const cp1y = y1 - archHeight;
         let cp2x = x2, cp2y = y2;
 
         if (targetSide === 'left') { 
@@ -338,8 +378,14 @@ export default function GraphView({ data, highlight }: Props) {
         return `M ${x1} ${y1} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${x2} ${y2}`;
     };
 
+    // Safety net for a malformed trace. Placed after every hook so the hook order
+    // stays identical on every render.
+    if (!Array.isArray(data.nodes)) {
+        return <div className="p-4 text-text-muted">No memory nodes to display.</div>;
+    }
+
     return (
-        <div 
+        <div
             ref={mainContainerRef}
             className="flex flex-col items-center w-full min-h-[400px] h-full relative font-mono overflow-hidden select-none bg-black/5 rounded-lg"
             onMouseDown={handleMouseDown}
@@ -484,3 +530,5 @@ export default function GraphView({ data, highlight }: Props) {
         </div>
     );
 }
+
+export default memo(GraphView);

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import type { DataStructureState } from '../types';
 import type { LastChange } from '../hooks/useVisualizer';
 import StackPlate from './DataStructures/StackPlate';
@@ -48,6 +48,10 @@ function renderStructure(structure: DataStructureState, highlight: NodeHighlight
     }
 }
 
+function structureId(structure: DataStructureState): string {
+    return `${structure.type}-${structure.name}`;
+}
+
 function highlightFor(structure: DataStructureState, lastChange: LastChange | null | undefined): NodeHighlight | null {
     if (!lastChange) return null;
     // Memory-class structures get reclassified into different targets after analysis.
@@ -75,20 +79,32 @@ const TYPE_COLORS: Record<string, string> = {
 };
 
 export default function Visualizer({ structures, lastChange }: Props) {
+    // Built once per step rather than per render. The views latch their pulse
+    // animations off this object's identity, so rebuilding it on every render
+    // (panel drags fire on mousemove) would restart every pulse timer and keep
+    // the highlights stuck on.
+    const highlights = useMemo(() => {
+        const map = new Map<string, NodeHighlight | null>();
+        for (const structure of structures) {
+            map.set(structureId(structure), highlightFor(structure, lastChange));
+        }
+        return map;
+    }, [structures, lastChange]);
+
     const [boxDimensions, setBoxDimensions] = useState<Record<string, { w: number, h: number }>>({});
     const draggingRef = useRef<{ id: string, startY: number, startX: number, startW: number, startH: number, mode: 'v' | 'h' | 'both' } | null>(null);
 
-    const onMouseDown = (id: string, mode: 'v' | 'h' | 'both', e: React.MouseEvent) => {
+    const onMouseDown = useCallback((id: string, mode: 'v' | 'h' | 'both', e: React.MouseEvent) => {
         const current = boxDimensions[id] || {
             w: (document.getElementById(`container-${id}`)?.clientWidth || 400),
             h: (id.includes('memory') || id.includes('tree') || id.includes('doubly') || id.includes('graph') || id.includes('circular') ? 450 : 300)
         };
         draggingRef.current = { id, startY: e.clientY, startX: e.clientX, startW: current.w, startH: current.h, mode };
-        
+
         const cursorMap = { v: 'row-resize', h: 'col-resize', both: 'nwse-resize' };
         document.body.style.cursor = cursorMap[mode];
         document.body.style.userSelect = 'none';
-    };
+    }, [boxDimensions]);
 
     const onMouseMove = useCallback((e: MouseEvent) => {
         if (!draggingRef.current) return;
@@ -148,7 +164,7 @@ export default function Visualizer({ structures, lastChange }: Props) {
         <div className="flex-1 overflow-auto p-6">
             <div className="flex flex-wrap gap-6 items-start">
                 {structures.map((structure) => {
-                    const id = `${structure.type}-${structure.name}`;
+                    const id = structureId(structure);
                     const dim = boxDimensions[id] || {
                         w: -1, // -1 means use default or auto
                         h: (
@@ -179,7 +195,7 @@ export default function Visualizer({ structures, lastChange }: Props) {
                             `}
                         >
                             <div className="flex-1 flex items-center justify-center overflow-hidden p-6 relative">
-                                {renderStructure(structure, highlightFor(structure, lastChange))}
+                                {renderStructure(structure, highlights.get(id) ?? null)}
                             </div>
 
                             {/* Resize Handle (Bottom - Vertical) */}

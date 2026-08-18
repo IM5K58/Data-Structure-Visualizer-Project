@@ -1,32 +1,24 @@
-import { useReducer, useCallback, useRef } from 'react';
+import { useReducer, useCallback, useEffect, useMemo, useRef } from 'react';
 import type {
     VisualizerState,
     VisualizerAction,
     Command,
     DataStructureState,
-    StackState,
-    QueueState,
-    MemoryState,
-    TreeState,
-    CircularState,
-    DoublyState,
-    GraphState,
     HeapState,
-    HashMapState,
-    UnionFindState,
     LocalVar,
 } from '../types';
 import { nextId, resetParserIds } from '../utils/ids';
 import { compileCode } from '../api/compilerApi';
 import { mapTraceToCommands } from '../engine/stepMapper';
 
-const initialState: VisualizerState = {
+export const initialState: VisualizerState = {
     structures: [],
     commandHistory: [],
     currentStep: -1,
     isRunning: false,
     isLoading: false,
     error: null,
+    warning: null,
     stdout: '',
     terminalOutput: '',
     stdin: '',
@@ -34,6 +26,19 @@ const initialState: VisualizerState = {
     callStack: [],
     breakpoints: [],
 };
+
+/**
+ * Commands that carry diagnostics or scalar state rather than a data-structure
+ * mutation. They must never reach `findOrCreateStructure`, or they materialize
+ * an empty panel for a structure that doesn't exist (e.g. an `ERROR` command
+ * conjuring a blank "memory" box while showing a compile failure).
+ */
+const NON_STRUCTURAL_COMMANDS: ReadonlySet<Command['type']> = new Set([
+    'LOCAL_VAR_UPDATE',
+    'STACK_FRAMES',
+    'ERROR',
+    'UNKNOWN',
+]);
 
 function findOrCreateStructure(
     structures: DataStructureState[],
@@ -77,14 +82,99 @@ function findOrCreateStructure(
         case 'unionfind':
             newStructure = { type: 'unionfind', name: targetName, parent: {}, ops: [] };
             break;
+        default:
+            // Unknown target from a malformed trace — ignore rather than pushing
+            // `undefined` into the structure list.
+            return structures;
     }
     return [...structures, newStructure];
+}
+
+/**
+ * Compare two heap values. Numeric when both sides parse as numbers, so that
+ * 10 sorts above 9 instead of below it lexicographically.
+ */
+function compareValues(a: number | string | boolean, b: number | string | boolean): number {
+    const na = typeof a === 'boolean' ? Number(a) : Number(a);
+    const nb = typeof b === 'boolean' ? Number(b) : Number(b);
+    if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
+    return String(a).localeCompare(String(b));
+}
+
+/**
+ * Infer whether the array currently models a max-heap or a min-heap by counting
+ * parent/child order violations under each interpretation. We can't see the
+ * comparator the user's code uses, so we read it off the data itself; ties
+ * (including the trivial 1-element heap) default to max-heap.
+ */
+function inferHeapIsMax(items: HeapState['items']): boolean {
+    let maxViolations = 0;
+    let minViolations = 0;
+    for (let i = 1; i < items.length; i++) {
+        const parent = items[Math.floor((i - 1) / 2)];
+        const cmp = compareValues(parent.value, items[i].value);
+        if (cmp < 0) maxViolations++;
+        if (cmp > 0) minViolations++;
+    }
+    return maxViolations <= minViolations;
+}
+
+/**
+ * Remove the root the way a real binary heap does: move the last element to
+ * index 0, then sift it down. Plain `items.slice(1)` shifts every element left
+ * by one, which reassigns every parent/child relationship and leaves the tree
+ * view showing a heap the program never had.
+ */
+function heapPop(items: HeapState['items']): HeapState['items'] {
+    if (items.length <= 1) return [];
+    const isMax = inferHeapIsMax(items);
+    const next = items.slice(0, -1);
+    next[0] = items[items.length - 1];
+
+    let i = 0;
+    for (;;) {
+        const left = 2 * i + 1;
+        const right = left + 1;
+        let best = i;
+        if (left < next.length && (isMax ? compareValues(next[left].value, next[best].value) > 0
+                                         : compareValues(next[left].value, next[best].value) < 0)) {
+            best = left;
+        }
+        if (right < next.length && (isMax ? compareValues(next[right].value, next[best].value) > 0
+                                          : compareValues(next[right].value, next[best].value) < 0)) {
+            best = right;
+        }
+        if (best === i) break;
+        [next[i], next[best]] = [next[best], next[i]];
+        i = best;
+    }
+    return next;
+}
+
+/**
+ * Restore the heap invariant after appending to the end of the array.
+ */
+function heapPush(items: HeapState['items'], entry: HeapState['items'][number]): HeapState['items'] {
+    const next = [...items, entry];
+    if (next.length === 1) return next;
+    const isMax = inferHeapIsMax(items.length > 1 ? items : next);
+
+    let i = next.length - 1;
+    while (i > 0) {
+        const parent = Math.floor((i - 1) / 2);
+        const cmp = compareValues(next[i].value, next[parent].value);
+        if (isMax ? cmp <= 0 : cmp >= 0) break;
+        [next[i], next[parent]] = [next[parent], next[i]];
+        i = parent;
+    }
+    return next;
 }
 
 function executeCommand(
     structures: DataStructureState[],
     command: Command
 ): DataStructureState[] {
+    if (NON_STRUCTURAL_COMMANDS.has(command.type)) return structures;
     structures = findOrCreateStructure(structures, command.target, command.targetName);
 
     return structures.map((s) => {
@@ -93,57 +183,49 @@ function executeCommand(
         switch (command.type) {
             case 'PUSH': {
                 if (s.type === 'heap') {
-                    const heap = s as HeapState;
                     return {
-                        ...heap,
-                        items: [...heap.items, { id: nextId(), value: command.value! }],
+                        ...s,
+                        items: heapPush(s.items, { id: nextId(), value: command.value ?? '' }),
                     };
                 }
-                const stack = s as StackState;
+                if (s.type !== 'stack') return s;
                 return {
-                    ...stack,
-                    items: [...stack.items, { id: nextId(), value: command.value! }],
+                    ...s,
+                    items: [...s.items, { id: nextId(), value: command.value ?? '' }],
                 };
             }
             case 'POP': {
                 if (s.type === 'heap') {
-                    const heap = s as HeapState;
-                    if (heap.items.length === 0) return heap;
-                    // Heap pop removes the root (index 0). The last element conceptually
-                    // moves to root then sifts down — but we don't have full visibility
-                    // into priority_queue internals, so we just remove the root and let
-                    // the next snapshot fill in the new top via a fresh MAP-like read.
-                    return { ...heap, items: heap.items.slice(1) };
+                    if (s.items.length === 0) return s;
+                    return { ...s, items: heapPop(s.items) };
                 }
-                const stack = s as StackState;
-                if (stack.items.length === 0) return stack;
+                if (s.type !== 'stack') return s;
+                if (s.items.length === 0) return s;
                 return {
-                    ...stack,
-                    items: stack.items.slice(0, -1),
+                    ...s,
+                    items: s.items.slice(0, -1),
                 };
             }
             case 'MAP_SET': {
                 if (s.type !== 'hashmap') return s;
-                const map = s as HashMapState;
                 const key = command.property ?? '';
                 const value = String(command.value ?? '');
-                const idx = map.entries.findIndex(e => e.key === key);
+                const idx = s.entries.findIndex(e => e.key === key);
                 if (idx >= 0) {
-                    const next = map.entries.slice();
+                    const next = s.entries.slice();
                     next[idx] = { ...next[idx], value };
-                    return { ...map, entries: next };
+                    return { ...s, entries: next };
                 }
-                return { ...map, entries: [...map.entries, { id: nextId(), key, value }] };
+                return { ...s, entries: [...s.entries, { id: nextId(), key, value }] };
             }
             case 'MAP_REMOVE': {
                 if (s.type !== 'hashmap') return s;
-                const map = s as HashMapState;
                 const key = command.property ?? '';
-                return { ...map, entries: map.entries.filter(e => e.key !== key) };
+                return { ...s, entries: s.entries.filter(e => e.key !== key) };
             }
             case 'UF_UNION': {
                 if (s.type !== 'unionfind') return s;
-                const uf = s as UnionFindState;
+                const uf = s;
                 const a = String(command.label ?? '');
                 const b = String(command.pointerTo ?? '');
                 if (!a || !b) return uf;
@@ -168,7 +250,7 @@ function executeCommand(
             }
             case 'UF_FIND': {
                 if (s.type !== 'unionfind') return s;
-                const uf = s as UnionFindState;
+                const uf = s;
                 const x = String(command.label ?? '');
                 if (!x) return uf;
                 const next = { ...uf.parent };
@@ -177,66 +259,55 @@ function executeCommand(
                 return { ...uf, parent: next, ops: [op, ...uf.ops].slice(0, 20) };
             }
             case 'ENQUEUE': {
-                const queue = s as QueueState;
+                if (s.type !== 'queue') return s;
                 return {
-                    ...queue,
-                    items: [...queue.items, { id: nextId(), value: command.value! }],
+                    ...s,
+                    items: [...s.items, { id: nextId(), value: command.value ?? '' }],
                 };
             }
             case 'DEQUEUE': {
-                const queue = s as QueueState;
-                if (queue.items.length === 0) return queue;
+                if (s.type !== 'queue') return s;
+                if (s.items.length === 0) return s;
                 return {
-                    ...queue,
-                    items: queue.items.slice(1),
+                    ...s,
+                    items: s.items.slice(1),
                 };
             }
             case 'ALLOCATE_NODE': {
+                if (!command.nodeId) return s;
                 const newNode = {
-                    id: command.nodeId!,
+                    id: command.nodeId,
                     type: command.structType || 'Node',
                     fields: {},
                     pointers: {},
                     labels: command.label ? [command.label] : []
                 };
                 if (s.type === 'tree') {
-                    const tree = s as TreeState;
                     return {
-                        ...tree,
-                        nodes: [...tree.nodes, newNode],
-                        rootId: tree.rootId ?? command.nodeId!,
+                        ...s,
+                        nodes: [...s.nodes, newNode],
+                        rootId: s.rootId ?? command.nodeId,
                     };
                 }
-                if (s.type === 'circular') {
-                    const circ = s as CircularState;
+                if (s.type === 'circular' || s.type === 'doubly') {
                     return {
-                        ...circ,
-                        nodes: [...circ.nodes, newNode],
-                        headId: circ.headId ?? command.nodeId!,
+                        ...s,
+                        nodes: [...s.nodes, newNode],
+                        headId: s.headId ?? command.nodeId,
                     };
                 }
-                if (s.type === 'doubly') {
-                    const dl = s as DoublyState;
-                    return {
-                        ...dl,
-                        nodes: [...dl.nodes, newNode],
-                        headId: dl.headId ?? command.nodeId!,
-                    };
+                if (s.type === 'graph' || s.type === 'memory') {
+                    return { ...s, nodes: [...s.nodes, newNode] };
                 }
-                if (s.type === 'graph') {
-                    const g = s as GraphState;
-                    return { ...g, nodes: [...g.nodes, newNode] };
-                }
-                if (s.type !== 'memory') return s;
-                const mem = s as MemoryState;
-                return { ...mem, nodes: [...mem.nodes, newNode] };
+                return s;
             }
             case 'SET_LABEL': {
                 if (
                     s.type !== 'memory' && s.type !== 'tree' && s.type !== 'circular'
                     && s.type !== 'doubly' && s.type !== 'graph'
                 ) return s;
-                const label = command.label!;
+                if (!command.label) return s;
+                const label = command.label;
                 const targetNodeId = command.nodeId;
                 return {
                     ...s,
@@ -254,11 +325,13 @@ function executeCommand(
                     s.type !== 'memory' && s.type !== 'tree' && s.type !== 'circular'
                     && s.type !== 'doubly' && s.type !== 'graph'
                 ) return s;
+                if (!command.property) return s;
+                const property = command.property;
                 return {
                     ...s,
                     nodes: s.nodes.map(n =>
                         n.id === command.nodeId
-                            ? { ...n, fields: { ...n.fields, [command.property!]: command.value as number | string | boolean } }
+                            ? { ...n, fields: { ...n.fields, [property]: command.value ?? '' } }
                             : n
                     )
                 } as DataStructureState;
@@ -268,11 +341,13 @@ function executeCommand(
                     s.type !== 'memory' && s.type !== 'tree' && s.type !== 'circular'
                     && s.type !== 'doubly' && s.type !== 'graph'
                 ) return s;
+                if (!command.property) return s;
+                const property = command.property;
                 return {
                     ...s,
                     nodes: s.nodes.map(n =>
                         n.id === command.nodeId
-                            ? { ...n, pointers: { ...n.pointers, [command.property!]: command.pointerTo || null } }
+                            ? { ...n, pointers: { ...n.pointers, [property]: command.pointerTo || null } }
                             : n
                     )
                 } as DataStructureState;
@@ -283,31 +358,22 @@ function executeCommand(
                     && s.type !== 'doubly' && s.type !== 'graph'
                 ) return s;
                 const filtered = s.nodes.filter(n => n.id !== command.nodeId);
+                const fallbackId = filtered.length > 0 ? filtered[0].id : null;
                 if (s.type === 'tree') {
-                    const tree = s as TreeState;
                     return {
-                        ...tree,
+                        ...s,
                         nodes: filtered,
-                        rootId: tree.rootId === command.nodeId ? (filtered.length > 0 ? filtered[0].id : null) : tree.rootId,
+                        rootId: s.rootId === command.nodeId ? fallbackId : s.rootId,
                     };
                 }
-                if (s.type === 'circular') {
-                    const circ = s as CircularState;
+                if (s.type === 'circular' || s.type === 'doubly') {
                     return {
-                        ...circ,
+                        ...s,
                         nodes: filtered,
-                        headId: circ.headId === command.nodeId ? (filtered.length > 0 ? filtered[0].id : null) : circ.headId,
+                        headId: s.headId === command.nodeId ? fallbackId : s.headId,
                     };
                 }
-                if (s.type === 'doubly') {
-                    const dl = s as DoublyState;
-                    return {
-                        ...dl,
-                        nodes: filtered,
-                        headId: dl.headId === command.nodeId ? (filtered.length > 0 ? filtered[0].id : null) : dl.headId,
-                    };
-                }
-                return { ...s, nodes: filtered } as DataStructureState;
+                return { ...s, nodes: filtered };
             }
             default:
                 return s;
@@ -319,8 +385,6 @@ function replayToStep(commands: Command[], targetStep: number): DataStructureSta
     resetParserIds();
     let structures: DataStructureState[] = [];
     for (let i = 0; i <= targetStep; i++) {
-        const t = commands[i].type;
-        if (t === 'LOCAL_VAR_UPDATE' || t === 'STACK_FRAMES') continue;
         structures = executeCommand(structures, commands[i]);
     }
     return structures;
@@ -352,15 +416,24 @@ function replayCallStackToStep(commands: Command[], targetStep: number): string[
     return stack;
 }
 
-function reducer(state: VisualizerState, action: VisualizerAction): VisualizerState {
+/** Exported for tests — the hook is the only production caller. */
+export function reducer(state: VisualizerState, action: VisualizerAction): VisualizerState {
     switch (action.type) {
         case 'LOAD_COMMANDS':
+            // Reset only the replay state. Spreading `initialState` here would also
+            // wipe `breakpoints` (set by the user in the editor gutter before the
+            // first Run), `stdin` (typed in the terminal), and the `error`/`stdout`
+            // that `loadCode` dispatches immediately before this action.
             resetParserIds();
             return {
-                ...initialState,
+                ...state,
+                structures: [],
                 commandHistory: action.commands,
                 currentStep: -1,
+                isRunning: false,
+                terminalOutput: '',
                 localVars: [],
+                callStack: [],
             };
         case 'STEP': {
             const nextStep = state.currentStep + 1;
@@ -438,6 +511,7 @@ function reducer(state: VisualizerState, action: VisualizerAction): VisualizerSt
                 ...initialState,
                 commandHistory: state.commandHistory,
                 stdin: state.stdin,
+                breakpoints: state.breakpoints,
                 localVars: [],
                 callStack: [],
             };
@@ -447,6 +521,8 @@ function reducer(state: VisualizerState, action: VisualizerAction): VisualizerSt
             return { ...state, isLoading: action.isLoading };
         case 'SET_ERROR':
             return { ...state, error: action.error };
+        case 'SET_WARNING':
+            return { ...state, warning: action.warning };
         case 'SET_STDOUT':
             return { ...state, stdout: action.stdout };
         case 'SET_STDIN':
@@ -493,39 +569,78 @@ export function useVisualizer() {
     const currentStepRef = useRef<number>(state.currentStep);
     currentStepRef.current = state.currentStep;
 
+    // Guards against overlapping compiles: a second Run aborts the first, and
+    // only the newest request is allowed to write its result into state.
+    const requestGenRef = useRef(0);
+    const inFlightRef = useRef<AbortController | null>(null);
+
     const loadCode = useCallback(async (code: string) => {
         stopAutoRun();
+        inFlightRef.current?.abort();
+        const controller = new AbortController();
+        inFlightRef.current = controller;
+        const gen = ++requestGenRef.current;
+        const isStale = () => gen !== requestGenRef.current;
+
         dispatch({ type: 'SET_LOADING', isLoading: true });
         dispatch({ type: 'SET_ERROR', error: null });
+        dispatch({ type: 'SET_WARNING', warning: null });
         dispatch({ type: 'SET_STDOUT', stdout: '' });
 
         try {
-            const response = await compileCode(code, stdinRef.current);
+            const response = await compileCode(code, stdinRef.current, controller.signal);
+            if (isStale()) return false;
+
             if (!response.success && response.error) {
-                dispatch({ type: 'SET_ERROR', error: response.error.message });
-
-                // Create virtual error commands to show in the Command Log as requested
-                const errorCommands: Command[] = response.error.message.split('\n').filter(line => line.trim()).map(line => ({
-                    type: 'ERROR',
-                    target: 'memory',
-                    targetName: 'error',
-                    raw: line.trim()
-                }));
-
+                // Command log first, then the error — LOAD_COMMANDS resets replay
+                // state, so anything dispatched before it that LOAD_COMMANDS also
+                // touches would be lost.
+                const errorCommands: Command[] = response.error.message
+                    .split('\n')
+                    .filter(line => line.trim())
+                    .map(line => ({
+                        type: 'ERROR',
+                        target: 'memory',
+                        targetName: 'error',
+                        raw: line.trim(),
+                    }));
                 dispatch({ type: 'LOAD_COMMANDS', commands: errorCommands });
+                dispatch({ type: 'SET_ERROR', error: response.error.message });
                 return false;
             }
 
             const commands = mapTraceToCommands(response.steps);
-            dispatch({ type: 'SET_STDOUT', stdout: response.stdout });
             dispatch({ type: 'LOAD_COMMANDS', commands });
+            dispatch({ type: 'SET_STDOUT', stdout: response.stdout });
+
+            // The run succeeded — these go to the warning channel, not `error`.
+            // Showing a truncated-but-valid trace in the same red box as a compile
+            // failure told the user their program was broken when it wasn't.
+            const notices: string[] = [];
+            if (response.notice) notices.push(response.notice);
+            if (response.truncated) {
+                notices.push(
+                    'Trace was truncated: the program exceeded the tracer\'s step or time limit. '
+                    + 'The visualization below is incomplete.'
+                );
+            }
+            if (notices.length > 0) {
+                dispatch({ type: 'SET_WARNING', warning: notices.join('\n\n') });
+            }
             return true;
-        } catch (err: any) {
-            dispatch({ type: 'SET_ERROR', error: err.message || 'Failed to compile/execute code.' });
+        } catch (err) {
+            if (isStale() || (err instanceof DOMException && err.name === 'AbortError')) return false;
             dispatch({ type: 'LOAD_COMMANDS', commands: [] });
+            dispatch({
+                type: 'SET_ERROR',
+                error: err instanceof Error ? err.message : 'Failed to compile/execute code.',
+            });
             return false;
         } finally {
-            dispatch({ type: 'SET_LOADING', isLoading: false });
+            if (!isStale()) {
+                inFlightRef.current = null;
+                dispatch({ type: 'SET_LOADING', isLoading: false });
+            }
         }
     }, [stopAutoRun]);
 
@@ -596,9 +711,16 @@ export function useVisualizer() {
         dispatch({ type: 'CLEAR_BREAKPOINTS' });
     }, []);
 
+    // Tear down the run-loop timer and any in-flight compile on unmount so they
+    // don't keep dispatching into a dead reducer.
+    useEffect(() => () => {
+        if (intervalRef.current) clearInterval(intervalRef.current);
+        inFlightRef.current?.abort();
+    }, []);
+
     // Source line of the most recently executed command, if any.
     // Used to highlight the corresponding line in the editor.
-    const currentLine: number | null = (() => {
+    const currentLine: number | null = useMemo(() => {
         if (state.currentStep < 0) return null;
         // Walk backwards: the latest command may be a LOCAL_VAR_UPDATE without
         // a useful `line`, in which case fall back to the prior command's line.
@@ -607,11 +729,13 @@ export function useVisualizer() {
             if (typeof ln === 'number' && ln > 0) return ln;
         }
         return null;
-    })();
+    }, [state.currentStep, state.commandHistory]);
 
     // Most recent visual change — used by visualizers to pulse/highlight
-    // the node or field that just got mutated.
-    const lastChange: LastChange | null = (() => {
+    // the node or field that just got mutated. Memoized so its identity is
+    // stable across unrelated re-renders (panel drags, resizes); the views key
+    // their pulse timers off this object.
+    const lastChange: LastChange | null = useMemo(() => {
         if (state.currentStep < 0) return null;
         const cmd = state.commandHistory[state.currentStep];
         if (!cmd) return null;
@@ -621,11 +745,22 @@ export function useVisualizer() {
             case 'SET_POINTER':
             case 'DELETE_NODE':
             case 'SET_LABEL':
+            case 'MAP_SET':
+            case 'MAP_REMOVE':
                 return {
                     target: cmd.target,
                     targetName: cmd.targetName,
                     nodeId: cmd.nodeId ?? null,
                     property: cmd.property ?? null,
+                    kind: cmd.type,
+                };
+            case 'UF_UNION':
+            case 'UF_FIND':
+                return {
+                    target: cmd.target,
+                    targetName: cmd.targetName,
+                    nodeId: cmd.label ?? null,
+                    property: cmd.pointerTo ?? null,
                     kind: cmd.type,
                 };
             case 'PUSH':
@@ -642,7 +777,7 @@ export function useVisualizer() {
             default:
                 return null;
         }
-    })();
+    }, [state.currentStep, state.commandHistory]);
 
     return {
         state,

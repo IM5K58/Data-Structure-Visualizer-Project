@@ -7,6 +7,7 @@ export default defineConfig({
         // jsdom is needed by component render tests; non-DOM tests don't care.
         environment: 'jsdom',
         globals: false,
+        setupFiles: ['./src/test/setup.ts'],
         // Server tests live under server/, run their own vitest config.
         include: ['src/**/*.test.{ts,tsx}'],
     },

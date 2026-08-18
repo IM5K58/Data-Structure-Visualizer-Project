@@ -50,8 +50,12 @@ export default function CodeInput({ onCodeChange, currentLine, breakpoints, onTo
     const monacoRef = useRef<Monaco | null>(null);
     const decorationsRef = useRef<editor.IEditorDecorationsCollection | null>(null);
     const breakpointsRef = useRef<editor.IEditorDecorationsCollection | null>(null);
+    // Kept in a ref so the Monaco gutter-click handler (registered once on mount)
+    // always calls the current callback without re-registering.
     const onToggleBreakpointRef = useRef(onToggleBreakpoint);
-    onToggleBreakpointRef.current = onToggleBreakpoint;
+    useEffect(() => {
+        onToggleBreakpointRef.current = onToggleBreakpoint;
+    }, [onToggleBreakpoint]);
 
     useEffect(() => {
         onCodeChange(code);

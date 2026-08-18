@@ -12,6 +12,8 @@ interface Props {
     totalSteps: number;
     isLoading: boolean;
     error: string | null;
+    /** Non-fatal: the program ran, but something is worth saying. */
+    warning?: string | null;
 }
 
 const SPEED_OPTIONS = [
@@ -34,6 +36,7 @@ export default function Controls({
     totalSteps,
     isLoading,
     error,
+    warning,
 }: Props) {
     const [speedIndex, setSpeedIndex] = useState(2); // default 1x
     const isFinished = currentStep >= totalSteps - 1 && totalSteps > 0;
@@ -45,7 +48,7 @@ export default function Controls({
 
     return (
         <div className="flex flex-col gap-4">
-            {/* Error Message */}
+            {/* Error Message — the run did not happen */}
             {error && (
                 <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-xs font-mono max-h-32 overflow-y-auto whitespace-pre-wrap">
                     <span className="font-bold">Error:</span>
@@ -54,11 +57,20 @@ export default function Controls({
                 </div>
             )}
 
+            {/* Notice — the run succeeded, but the trace is partial or absent */}
+            {warning && !error && (
+                <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-lg text-amber-300 text-xs font-mono max-h-32 overflow-y-auto whitespace-pre-wrap">
+                    <span className="font-bold">Notice:</span>
+                    <br />
+                    {warning}
+                </div>
+            )}
+
             {/* Buttons */}
             <div className="flex items-center gap-3">
                 <button
                     onClick={isRunning ? onStop : onRun}
-                    disabled={isFinished && !isRunning}
+                    disabled={isLoading || (isFinished && !isRunning)}
                     className={`
             flex-1 h-12 rounded-xl font-semibold text-base transition-all duration-200
             ${isLoading

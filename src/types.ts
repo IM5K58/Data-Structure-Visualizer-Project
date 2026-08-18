@@ -159,6 +159,12 @@ export interface VisualizerState {
     isRunning: boolean;
     isLoading: boolean;
     error: string | null;
+    /**
+     * A non-fatal message about the run — the program executed, but something is
+     * worth telling the user (trace truncated, step tracing unavailable).
+     * Rendered distinctly from `error`, which means the run did not happen.
+     */
+    warning: string | null;
     stdout: string; // Total output from backend
     terminalOutput: string; // Synchronized output shown in terminal
     stdin: string;
@@ -175,6 +181,7 @@ export type VisualizerAction =
     | { type: 'SET_RUNNING'; isRunning: boolean }
     | { type: 'SET_LOADING'; isLoading: boolean }
     | { type: 'SET_ERROR'; error: string | null }
+    | { type: 'SET_WARNING'; warning: string | null }
     | { type: 'SET_STDOUT'; stdout: string }
     | { type: 'SET_STDIN'; stdin: string }
     | { type: 'LOAD_COMMANDS'; commands: Command[] }

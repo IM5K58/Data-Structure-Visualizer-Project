@@ -6,29 +6,9 @@
 
 import type { GDBSnapshot, GDBField, GDBLocal, STLSnapshot } from './gdbDriver.js';
 import { isPointerType, isNullPointer, isIntegralType } from './gdbDriver.js';
+import type { TraceStep } from '../types/index.js';
 
-// Mirror of the frontend TraceStep type (kept in sync with src/api/compilerApi.ts)
-export interface TraceStep {
-    step: number;
-    line: number;
-    type: string;
-    var?: string;
-    field?: string;
-    source?: string;
-    value?: number | string;
-    addr?: string;
-    target?: string;
-    struct?: string;
-    hint?: 'stack' | 'queue' | 'node' | 'tree' | 'circular' | 'heap' | 'hashmap' | 'unionfind';
-    raw?: string;
-    output?: string;
-    /** Call stack (outermost→innermost) for STACK_FRAMES events */
-    frames?: string[];
-    /** For map operations (MAP_SET / MAP_REMOVE) */
-    key?: string;
-    /** For UF_UNION: the second operand */
-    arg2?: string;
-}
+export type { TraceStep };
 
 // ===== Helpers =====
 
@@ -42,11 +22,63 @@ function baseTypeName(pointerType: string): string {
 }
 
 /**
+ * Split a C++ type name into lowercase word tokens, breaking on camelCase
+ * humps as well as separators: `MaxHeap` → ['max','heap'], `min_heap` →
+ * ['min','heap'], `BinaryHeap` → ['binary','heap'].
+ */
+function typeNameTokens(typeName: string): string[] {
+    return baseTypeName(typeName)
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+        .split(/[^A-Za-z0-9]+/)
+        .filter(Boolean)
+        .map(t => t.toLowerCase());
+}
+
+const HEAP_TOKENS = new Set(['heap', 'heapify', 'pq', 'pqueue', 'priorityqueue', 'binaryheap']);
+
+/**
+ * Recognize a user-defined heap class from its type name. In GDB mode we can't
+ * see method names, only the type, so this is the only signal available.
+ *
+ * Tokenizing rather than regex-matching the raw string is what makes `MyHeap`
+ * and `BinaryHeap` match while `cheap` does not — a substring test would get
+ * both wrong in opposite directions.
+ */
+function isHeapTypeName(typeName: string): boolean {
+    const tokens = typeNameTokens(typeName);
+    if (tokens.some(t => HEAP_TOKENS.has(t))) return true;
+    for (let i = 0; i < tokens.length - 1; i++) {
+        if (tokens[i] === 'priority' && (tokens[i + 1] === 'queue' || tokens[i + 1] === 'q')) return true;
+    }
+    return false;
+}
+
+/** Field names that describe a fixed bound rather than a live index. */
+const CAPACITY_NAME = /^(cap|capacity|max_?size|maxsize|max_?len|maxlen|limit|bound|_?capacity)$/i;
+/** Field names that plausibly track how many elements are live. */
+const SIZE_NAME = /^_?(size|count|cnt|len|length|n|num|top|idx|index|tail|rear|back|end|head|front|start)$/i;
+/** Field names that advance as elements are appended. */
+const REAR_NAME = /^_?(rear|back|tail|end|write|w)$/i;
+/** Field names that advance as elements are consumed. */
+const FRONT_NAME = /^_?(front|head|start|read|r|first)$/i;
+/** Field names holding the live element count — the most reliable queue signal. */
+const COUNT_NAME = /^_?(size|count|cnt|len|length|num|n)$/i;
+
+/** Parse the element count out of an array type such as `int [10]`. */
+function arrayCapacity(arrayType: string): number | null {
+    const m = /\[\s*(\d+)\s*\]/.exec(arrayType);
+    if (!m) return null;
+    const n = parseInt(m[1], 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
  * All nodes start as 'node' hint.
  * Actual data structure classification is handled entirely by
  * stepMapper's analyzeAndReclassify() using runtime pointer graph topology.
  */
-function guessHint(_fields: GDBField[]): 'node' {
+function guessHint(): 'node' {
     return 'node';
 }
 
@@ -77,12 +109,15 @@ export function snapshotsToTraceSteps(
     const knownSTLVars = new Set<string>();
     let prevCallStack: string[] = [];
 
-    // varName → { hint, initialIdx, idxFieldName, arrFieldName }
+    // varName → classification + the fields we track for push/pop detection
     const knownValueStructs = new Map<string, {
-        hint: 'stack' | 'queue';
+        hint: 'stack' | 'queue' | 'heap';
         initialIdx: number;
+        /** Integral fields that could plausibly be a live index (capacity excluded). */
         idxFieldNames: string[];
         arrFieldName: string;
+        /** Declared array length, when the type carried one (`int [10]` → 10). */
+        capacity: number | null;
     }>();
 
     for (let i = 0; i < snapshots.length; i++) {
@@ -128,7 +163,7 @@ export function snapshotsToTraceSteps(
             if (!fields || fields.length === 0) continue;
 
             const structType = baseTypeName(local.type);
-            const hint = guessHint(fields);
+            const hint = guessHint();
 
             push({
                 line: snap.line,
@@ -194,7 +229,7 @@ export function snapshotsToTraceSteps(
                                 type: 'ALLOC',
                                 addr: newAddr,
                                 struct: newStructType,
-                                hint: guessHint(newFields),
+                                hint: guessHint(),
                                 raw: `[Line ${snap.line}] new ${newStructType} @ ${newAddr}`,
                             });
                             knownAddrs.add(newAddr);
@@ -267,7 +302,7 @@ export function snapshotsToTraceSteps(
 
                 push({
                     line: snap.line, type: 'ALLOC',
-                    addr: tgtAddr, struct: tgtType, hint: guessHint(tgtFields),
+                    addr: tgtAddr, struct: tgtType, hint: guessHint(),
                     raw: `[Line ${snap.line}] new ${tgtType} @ ${tgtAddr}`,
                 });
                 knownAddrs.add(tgtAddr);
@@ -466,14 +501,31 @@ export function snapshotsToTraceSteps(
 
             if (!knownValueStructs.has(varName)) {
                 // Second appearance: constructor has run, fields are now initialized.
-                // Register the struct with current (stable) initial values.
-                const hint: 'stack' | 'queue' = idxFields.length >= 2 ? 'queue' : 'stack';
-                const initialIdx = parseInt(idxFields[0].value);
+                // Heap detection: if the C++ struct/class type name looks like a heap
+                // (MaxHeap, MyHeap, PriorityQueue, …), classify as heap regardless of
+                // index-field count. Otherwise fall back to 1-idx → stack, 2+ → queue.
+                const local = snap.locals.find(l => l.name === varName);
+                const typeName = local?.type ?? '';
+
+                // A `capacity`/`maxSize` member is a fixed bound, not a live index.
+                // Tracking it would mean tracking a constant and emitting nothing.
+                const trackable = idxFields.filter(f => !CAPACITY_NAME.test(f.name));
+                const candidates = trackable.length > 0 ? trackable : idxFields;
+
+                const hint: 'stack' | 'queue' | 'heap' = isHeapTypeName(typeName)
+                    ? 'heap'
+                    : (candidates.length >= 2 ? 'queue' : 'stack');
+
+                // Prefer an explicitly size-like field for the initial-style probe
+                // (top-style starts at -1, size-style starts at 0).
+                const probe = candidates.find(f => SIZE_NAME.test(f.name)) ?? candidates[0];
+                const initialIdx = parseInt(probe.value);
                 knownValueStructs.set(varName, {
                     hint,
                     initialIdx: isNaN(initialIdx) ? -1 : initialIdx,
-                    idxFieldNames: idxFields.map(f => f.name),
+                    idxFieldNames: candidates.map(f => f.name),
                     arrFieldName: arrFields[0].name,
+                    capacity: arrayCapacity(arrFields[0].type),
                 });
                 push({
                     line: snap.line,
@@ -488,18 +540,28 @@ export function snapshotsToTraceSteps(
 
             const info = knownValueStructs.get(varName)!;
 
-            if (info.hint === 'stack') {
-                // Single index field → track push/pop
-                const idxName = info.idxFieldNames[0];
-                const currF = fields.find(f => f.name === idxName);
-                const prevF = prevFields.find(f => f.name === idxName);
-                if (!currF || !prevF) continue;
-
+            // Read every tracked index field's prev→curr delta once; both branches
+            // below select from this instead of assuming field order.
+            const deltas = info.idxFieldNames.map(name => {
+                const currF = fields.find(f => f.name === name);
+                const prevF = prevFields.find(f => f.name === name);
+                if (!currF || !prevF) return null;
                 const curr = parseInt(currF.value);
                 const prev = parseInt(prevF.value);
-                if (isNaN(curr) || isNaN(prev) || curr === prev) continue;
+                if (isNaN(curr) || isNaN(prev) || curr === prev) return null;
                 // Sanity check: ignore garbage-value transitions
-                if (Math.abs(curr - prev) > 1000) continue;
+                if (Math.abs(curr - prev) > 1000) return null;
+                return { name, curr, prev };
+            }).filter((d): d is { name: string; curr: number; prev: number } => d !== null);
+
+            if (deltas.length === 0) continue;
+
+            if (info.hint === 'stack' || info.hint === 'heap') {
+                // Whichever tracked field actually moved is the live index. A class
+                // like `{ int data[100]; int capacity; int size; }` would otherwise
+                // latch onto `capacity` and never emit anything.
+                const chosen = deltas.find(d => SIZE_NAME.test(d.name)) ?? deltas[0];
+                const { curr, prev } = chosen;
 
                 if (curr > prev) {
                     // PUSH — element is at data[curr] (top-style, initial=-1)
@@ -528,47 +590,96 @@ export function snapshotsToTraceSteps(
                     }
                 }
             } else {
-                // Queue — multiple index fields (front + rear pattern).
-                // Distinguish enqueue vs dequeue by checking whether the element
-                // at data[curr-1] is freshly written (value changed since last snapshot)
-                // or was already there (read-pointer advancing = dequeue).
-                for (const idxName of info.idxFieldNames) {
-                    const currF = fields.find(f => f.name === idxName);
-                    const prevF = prevFields.find(f => f.name === idxName);
-                    if (!currF || !prevF) continue;
+                // Queue — front/rear pattern. A single enqueue typically moves BOTH
+                // `rear` and `count`, so we must emit one event per *operation*, not
+                // one per changed field: pick the rear field and the front field by
+                // name and ignore everything else (size/count is derived from them).
+                const rear = deltas.find(d => REAR_NAME.test(d.name));
+                const front = deltas.find(d => FRONT_NAME.test(d.name));
 
-                    const curr = parseInt(currF.value);
-                    const prev = parseInt(prevF.value);
-                    if (isNaN(curr) || isNaN(prev) || curr === prev) continue;
-                    if (Math.abs(curr - prev) > 1000) continue;
+                /** Steps advanced, accounting for a circular wrap back through 0. */
+                const advanceOf = (d: { curr: number; prev: number }): number => {
+                    if (d.curr > d.prev) return d.curr - d.prev;
+                    // Went backwards. With a known capacity this is a ring wrap when
+                    // the implied forward distance is small; anything larger is a
+                    // reset/clear, which is not a dequeue.
+                    if (info.capacity !== null) {
+                        const wrapped = d.curr + info.capacity - d.prev;
+                        if (wrapped > 0 && wrapped <= 4) return wrapped;
+                    }
+                    return 0;
+                };
 
-                    if (curr > prev) {
-                        // Index advanced — determine if this is a write (enqueue) or
-                        // a read advance (dequeue) by checking if data[curr-1] changed.
-                        const elemIdx = curr - 1;
+                const emitEnqueue = (steps: number, endIdx: number) => {
+                    for (let k = steps; k >= 1; k--) {
+                        const raw = endIdx - k + 1;
+                        const elemIdx = info.capacity !== null
+                            ? ((raw % info.capacity) + info.capacity) % info.capacity
+                            : raw;
+                        const val = snap.arrayReadings.get(`${varName}.${info.arrFieldName}[${elemIdx}]`) ?? '';
+                        push({
+                            line: snap.line,
+                            type: 'PUSH',
+                            var: varName,
+                            value: val,
+                            raw: `[Line ${snap.line}] ${varName}.enqueue(${val})`,
+                        });
+                    }
+                };
+
+                const emitDequeue = (steps: number) => {
+                    for (let k = 0; k < steps; k++) {
+                        push({
+                            line: snap.line,
+                            type: 'POP',
+                            var: varName,
+                            raw: `[Line ${snap.line}] ${varName}.dequeue()`,
+                        });
+                    }
+                };
+
+                // `rear` may point at the next free slot or at the last element;
+                // either way the newest element sits just behind the new rear.
+                const newestIdx = rear
+                    ? (info.initialIdx < 0 ? rear.curr : rear.curr - 1)
+                    : null;
+
+                const counter = deltas.find(d => COUNT_NAME.test(d.name));
+                if (counter) {
+                    // A live element count is unambiguous: it distinguishes an
+                    // enqueue from a `clear()` that happens to leave `rear` looking
+                    // like it wrapped, and it survives ring-buffer index arithmetic.
+                    const delta = counter.curr - counter.prev;
+                    if (delta > 0) emitEnqueue(delta, newestIdx ?? counter.curr - 1);
+                    else emitDequeue(-delta);
+                } else if (rear || front) {
+                    if (rear) emitEnqueue(advanceOf(rear), newestIdx!);
+                    if (front) emitDequeue(advanceOf(front));
+                } else {
+                    // No recognizable front/rear names. Fall back to the single
+                    // most-moved field and infer direction from whether the element it
+                    // now points past was freshly written (enqueue) or pre-existing
+                    // (read pointer advancing = dequeue).
+                    const d = deltas[0];
+                    const steps = advanceOf(d);
+                    if (steps > 0) {
+                        const elemIdx = d.curr - 1;
                         const key = `${varName}.${info.arrFieldName}[${elemIdx}]`;
                         const currVal = snap.arrayReadings.get(key) ?? '';
                         const prevVal = prevArrayReadings.get(key);
-
                         const isNewWrite = prevVal === undefined || prevVal !== currVal;
 
                         if (isNewWrite) {
-                            // Rear advanced and data was freshly written → enqueue
-                            push({
-                                line: snap.line,
-                                type: 'PUSH',
-                                var: varName,
-                                value: currVal,
-                                raw: `[Line ${snap.line}] ${varName}.enqueue(${currVal})`,
-                            });
+                            emitEnqueue(steps, d.curr - 1);
                         } else {
-                            // Front advanced, data unchanged → dequeue
-                            push({
-                                line: snap.line,
-                                type: 'POP',
-                                var: varName,
-                                raw: `[Line ${snap.line}] ${varName}.dequeue()`,
-                            });
+                            for (let k = 0; k < steps; k++) {
+                                push({
+                                    line: snap.line,
+                                    type: 'POP',
+                                    var: varName,
+                                    raw: `[Line ${snap.line}] ${varName}.dequeue()`,
+                                });
+                            }
                         }
                     }
                 }

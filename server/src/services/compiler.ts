@@ -15,7 +15,6 @@ export interface CompileWithDebugResult {
 
 const GPP_PATH = process.env.GPP_PATH || (process.platform === 'win32' ? 'C:\\msys64\\ucrt64\\bin\\g++.exe' : '/usr/bin/g++');
 const PISTON_URL = process.env.PISTON_URL || '';
-const SANDBOX_DIR = join(process.cwd(), 'sandbox');
 
 // ─── Resource limits (Linux only) ──────────────────────────────────────────
 // Wrap user code & compiler invocations with `prlimit` (util-linux) so a
@@ -31,20 +30,34 @@ const RLIMIT = {
     nproc:    parseInt(process.env.RLIMIT_NPROC     ?? '64'),
 };
 const PRLIMIT_PATH = process.env.PRLIMIT_PATH ?? '/usr/bin/prlimit';
-// Probe once at module load. If prlimit isn't on the system (e.g. minimal
-// container without util-linux, or non-Linux platform), we silently degrade
-// to running without resource limits rather than crashing every request.
+// Probe once at module load.
 const PRLIMIT_AVAILABLE = process.platform === 'linux' && existsSync(PRLIMIT_PATH);
-const RLIMIT_ENABLED =
-    PRLIMIT_AVAILABLE
-    && process.env.DISABLE_RLIMIT !== 'true';
+const RLIMIT_OPTED_OUT = process.env.DISABLE_RLIMIT === 'true';
+const RLIMIT_ENABLED = PRLIMIT_AVAILABLE && !RLIMIT_OPTED_OUT;
 
-if (process.platform === 'linux' && !PRLIMIT_AVAILABLE) {
-    console.warn(
-        `  ⚠ prlimit not found at ${PRLIMIT_PATH} — resource limits disabled. ` +
-        `Install util-linux or set PRLIMIT_PATH.`,
+// prlimit is the ONLY thing bounding CPU, memory, file size and process count
+// for arbitrary user C++ on Linux. Losing it silently turns this service into an
+// unbounded remote-execution endpoint, so refuse to start instead of warning.
+// Set DISABLE_RLIMIT=true to acknowledge the risk explicitly (e.g. when the
+// container itself is already constrained by cgroups/seccomp).
+if (process.platform === 'linux' && !PRLIMIT_AVAILABLE && !RLIMIT_OPTED_OUT) {
+    throw new Error(
+        `prlimit not found at ${PRLIMIT_PATH}: refusing to run untrusted code without resource limits. `
+        + `Install util-linux, set PRLIMIT_PATH, or set DISABLE_RLIMIT=true to override deliberately.`,
     );
 }
+if (RLIMIT_OPTED_OUT) {
+    console.warn('  ⚠ DISABLE_RLIMIT=true — user code runs without prlimit resource caps.');
+}
+if (process.platform !== 'linux') {
+    console.warn(`  ⚠ ${process.platform}: prlimit unavailable — resource limits are NOT enforced. Development only.`);
+}
+
+/**
+ * Hard cap on how much of a child's stdout/stderr we buffer. Without it,
+ * `while (1) printf(...)` grows the server's heap until it dies.
+ */
+const MAX_CAPTURE_BYTES = parseInt(process.env.MAX_OUTPUT_BYTES ?? `${1024 * 1024}`);
 
 /**
  * Wrap a command in prlimit on Linux, otherwise return as-is.
@@ -80,30 +93,6 @@ function rlimitFlags(): string[] {
 // Linux에서는 RAM 기반 /dev/shm을 사용해 디스크 I/O 절감
 function getTempBase(): string {
     return process.platform === 'linux' ? '/dev/shm' : tmpdir();
-}
-
-/**
- * 서버 시작 시 __tracer.h 를 미리 컴파일하여 PCH(.gch) 생성.
- * 이후 매 요청에서 헤더 파싱을 스킵하므로 컴파일 시간이 단축됩니다.
- */
-export async function initializePCH(): Promise<void> {
-    if (PISTON_URL) return; // Piston 사용 시 불필요
-    try {
-        const tracerH = join(SANDBOX_DIR, '__tracer.h');
-        const result = await runProcess(
-            GPP_PATH,
-            ['-std=c++17', '-pipe', '-x', 'c++-header', tracerH],
-            SANDBOX_DIR,
-            30000
-        );
-        if (result.code === 0) {
-            console.log('  ✓ PCH compiled: __tracer.h.gch');
-        } else {
-            console.warn('  ⚠ PCH compilation failed (will compile without PCH):', result.stderr.slice(0, 200));
-        }
-    } catch (e) {
-        console.warn('  ⚠ PCH init error (skipped):', e);
-    }
 }
 
 /**
@@ -145,11 +134,10 @@ export async function executeLocal(code: string, stdin: string = ''): Promise<Pi
     await mkdir(jobDir, { recursive: true });
     await writeFile(srcFile, code, 'utf-8');
 
-    // 1. 컴파일
-    const includeDir = join(process.cwd(), 'sandbox');
+    // 1. 컴파일 — 사용자 소스를 그대로 컴파일합니다(주입 헤더 없음).
     const [compileCmd, compileArgs] = withRlimit(
         GPP_PATH,
-        [srcFile, '-o', outFile, '-std=c++17', '-pipe', '-I', includeDir],
+        [srcFile, '-o', outFile, '-std=c++17', '-pipe'],
     );
     const compileResult = await runProcess(compileCmd, compileArgs, jobDir, 10000);
     console.log('  Compile result:', JSON.stringify(compileResult));
@@ -214,26 +202,58 @@ function runProcess(
             const msysBin = 'C:\\msys64\\ucrt64\\bin';
             env.PATH = `${msysBin};${env.PATH}`;
         }
-        // spawn의 timeout 옵션은 Windows에서 실제로 프로세스를 종료하지 않으므로 직접 구현
-        const proc = spawn(command, args, { cwd, env });
+        // spawn의 timeout 옵션은 Windows에서 실제로 프로세스를 종료하지 않으므로 직접 구현.
+        // detached on POSIX so the whole process group can be signalled — a killed
+        // parent otherwise leaves forked children orphaned and still running.
+        const detached = process.platform !== 'win32';
+        const proc = spawn(command, args, { cwd, env, detached });
         let stdout = '';
         let stderr = '';
+        let truncated = false;
+
+        const capture = (buf: string, chunk: Buffer): string => {
+            if (buf.length >= MAX_CAPTURE_BYTES) {
+                truncated = true;
+                return buf;
+            }
+            const next = buf + chunk.toString();
+            if (next.length > MAX_CAPTURE_BYTES) {
+                truncated = true;
+                return next.slice(0, MAX_CAPTURE_BYTES);
+            }
+            return next;
+        };
+
+        const killTree = (signal: NodeJS.Signals) => {
+            try {
+                if (detached && proc.pid) process.kill(-proc.pid, signal);
+                else proc.kill(signal);
+            } catch { /* already gone */ }
+        };
 
         const timer = setTimeout(() => {
-            try { proc.kill('SIGTERM'); } catch { /* ignore */ }
-            setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* ignore */ } }, 500);
+            killTree('SIGTERM');
+            setTimeout(() => killTree('SIGKILL'), 500);
         }, timeout);
 
         if (stdin) {
+            // A program that exits without reading stdin makes this pipe emit
+            // EPIPE. `proc.on('error')` does NOT cover stream errors, so without
+            // this handler the rejection is an uncaught exception that kills the
+            // whole server.
+            proc.stdin.on('error', () => { /* child closed stdin early */ });
             proc.stdin.write(stdin);
             proc.stdin.end();
         }
 
-        proc.stdout.on('data', (data) => { stdout += data.toString(); });
-        proc.stderr.on('data', (data) => { stderr += data.toString(); });
+        proc.stdout.on('data', (data: Buffer) => { stdout = capture(stdout, data); });
+        proc.stderr.on('data', (data: Buffer) => { stderr = capture(stderr, data); });
 
         proc.on('close', (code, signal) => {
             clearTimeout(timer);
+            if (truncated) {
+                stderr += `\n[output truncated at ${MAX_CAPTURE_BYTES} bytes]`;
+            }
             resolve({ stdout, stderr, code: code ?? 1, signal: signal?.toString() ?? null });
         });
 

@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
+import { memo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { QueueState } from '../../types';
 import type { NodeHighlight } from '../Visualizer';
+import { useCountDelta } from '../../hooks/usePulse';
 
 interface Props {
     data: QueueState;
@@ -9,25 +10,9 @@ interface Props {
     highlight?: NodeHighlight | null;
 }
 
-export default function QueueBlock({ data }: Props) {
-    const prevCountRef = useRef(data.items.length);
-    const [lastAction, setLastAction] = useState<'enqueue' | 'dequeue' | null>(null);
-
-    useEffect(() => {
-        const prevCount = prevCountRef.current;
-        const currCount = data.items.length;
-        if (currCount > prevCount) {
-            setLastAction('enqueue');
-        } else if (currCount < prevCount) {
-            setLastAction('dequeue');
-        }
-        prevCountRef.current = currCount;
-
-        if (currCount !== prevCount) {
-            const timer = setTimeout(() => setLastAction(null), 800);
-            return () => clearTimeout(timer);
-        }
-    }, [data.items.length]);
+function QueueBlock({ data }: Props) {
+    const delta = useCountDelta(data.items.length);
+    const lastAction = delta === 'up' ? 'enqueue' : delta === 'down' ? 'dequeue' : null;
 
     return (
         <div className="flex flex-col items-center w-full h-full justify-center gap-3 px-4">
@@ -208,3 +193,5 @@ export default function QueueBlock({ data }: Props) {
         </div>
     );
 }
+
+export default memo(QueueBlock);

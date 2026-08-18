@@ -1,7 +1,8 @@
-import { useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import type { UnionFindState } from '../../types';
 import type { NodeHighlight } from '../Visualizer';
 import { motion, AnimatePresence } from 'framer-motion';
+import { usePulse } from '../../hooks/usePulse';
 
 interface Props {
     data: UnionFindState;
@@ -45,9 +46,20 @@ function buildForest(parent: Record<string, string>): { roots: string[]; tree: M
     return { roots, tree };
 }
 
-export default function UnionFindView({ data, highlight: _highlight }: Props) {
+function UnionFindView({ data, highlight }: Props) {
     const { roots, tree } = useMemo(() => buildForest(data.parent), [data.parent]);
     const elementCount = Object.keys(data.parent).length;
+
+    // UF_UNION carries both operands (nodeId = a, property = b); UF_FIND only the
+    // element being looked up.
+    const operands = useMemo(() => {
+        if (!highlight) return null;
+        if (highlight.kind !== 'UF_UNION' && highlight.kind !== 'UF_FIND') return null;
+        const ids = [highlight.nodeId, highlight.property].filter((v): v is string => !!v);
+        return ids.length > 0 ? ids : null;
+    }, [highlight]);
+    const pulsedIds = usePulse(operands, highlight);
+    const pulsed = useMemo(() => new Set(pulsedIds ?? []), [pulsedIds]);
 
     return (
         <div className="flex flex-col items-center w-full h-full justify-center gap-3 px-4 overflow-auto">
@@ -61,7 +73,7 @@ export default function UnionFindView({ data, highlight: _highlight }: Props) {
                     {roots.length === 0 ? (
                         <span className="text-text-muted/50 italic text-xs font-mono">no operations yet</span>
                     ) : (
-                        roots.map(r => <UFTree key={r} rootId={r} tree={tree} />)
+                        roots.map(r => <UFTree key={r} rootId={r} tree={tree} pulsed={pulsed} />)
                     )}
                 </AnimatePresence>
             </div>
@@ -101,14 +113,24 @@ export default function UnionFindView({ data, highlight: _highlight }: Props) {
     );
 }
 
-function UFTree({ rootId, tree }: { rootId: string; tree: Map<string, UFNode> }) {
+interface SubtreeProps {
+    id: string;
+    tree: Map<string, UFNode>;
+    pulsed: ReadonlySet<string>;
+}
+
+function UFTree({ rootId, tree, pulsed }: { rootId: string; tree: Map<string, UFNode>; pulsed: ReadonlySet<string> }) {
     const node = tree.get(rootId);
     if (!node) return null;
     return (
         <div className="flex flex-col items-center">
             <motion.div
                 layout
-                className="px-3 py-1.5 rounded-full bg-emerald-500/30 border border-emerald-400/60 text-emerald-50 font-mono text-xs font-bold shadow-[0_0_12px_rgba(16,185,129,0.3)]"
+                className={`px-3 py-1.5 rounded-full font-mono text-xs font-bold transition-colors duration-300 ${
+                    pulsed.has(rootId)
+                        ? 'bg-accent-cyan/30 border border-accent-cyan text-white shadow-[0_0_16px_rgba(0,229,255,0.5)]'
+                        : 'bg-emerald-500/30 border border-emerald-400/60 text-emerald-50 shadow-[0_0_12px_rgba(16,185,129,0.3)]'
+                }`}
             >
                 {rootId}
             </motion.div>
@@ -116,7 +138,7 @@ function UFTree({ rootId, tree }: { rootId: string; tree: Map<string, UFNode> })
                 <>
                     <div className="w-[2px] h-3 bg-emerald-500/40" />
                     <div className="flex items-start gap-3">
-                        {node.children.map(c => <UFSubtree key={c} id={c} tree={tree} />)}
+                        {node.children.map(c => <UFSubtree key={c} id={c} tree={tree} pulsed={pulsed} />)}
                     </div>
                 </>
             )}
@@ -124,14 +146,18 @@ function UFTree({ rootId, tree }: { rootId: string; tree: Map<string, UFNode> })
     );
 }
 
-function UFSubtree({ id, tree }: { id: string; tree: Map<string, UFNode> }) {
+function UFSubtree({ id, tree, pulsed }: SubtreeProps) {
     const node = tree.get(id);
     if (!node) return null;
     return (
         <div className="flex flex-col items-center">
             <motion.div
                 layout
-                className="px-2.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-200 font-mono text-[11px]"
+                className={`px-2.5 py-1 rounded-full font-mono text-[11px] transition-colors duration-300 ${
+                    pulsed.has(id)
+                        ? 'bg-accent-cyan/25 border border-accent-cyan text-white'
+                        : 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-200'
+                }`}
             >
                 {id}
             </motion.div>
@@ -139,10 +165,12 @@ function UFSubtree({ id, tree }: { id: string; tree: Map<string, UFNode> }) {
                 <>
                     <div className="w-[2px] h-2.5 bg-emerald-500/30" />
                     <div className="flex items-start gap-2">
-                        {node.children.map(c => <UFSubtree key={c} id={c} tree={tree} />)}
+                        {node.children.map(c => <UFSubtree key={c} id={c} tree={tree} pulsed={pulsed} />)}
                     </div>
                 </>
             )}
         </div>
     );
 }
+
+export default memo(UnionFindView);

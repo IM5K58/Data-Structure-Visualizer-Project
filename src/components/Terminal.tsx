@@ -1,23 +1,36 @@
 import { useState, useRef, useEffect } from 'react';
+import type { Command } from '../types';
 
 interface Props {
+    /** Output accumulated step by step as the trace replays. */
     terminalOutput: string;
+    /**
+     * The program's complete stdout as the server captured it. Used when there is
+     * no trace to replay (e.g. step tracing unavailable) — otherwise the output
+     * would sit in state, unread, while the user stared at an empty terminal.
+     */
+    fullStdout?: string;
     stdin: string;
     setStdin: (val: string) => void;
     currentStep: number;
-    commands: any[];
+    commands: Command[];
 }
 
-export default function Terminal({ 
-    terminalOutput, 
-    stdin, 
-    setStdin, 
-    currentStep, 
-    commands 
+export default function Terminal({
+    terminalOutput,
+    fullStdout,
+    stdin,
+    setStdin,
+    currentStep,
+    commands
 }: Props) {
     const [activeTab, setActiveTab] = useState<'output' | 'input' | 'log'>('output');
     const outputRef = useRef<HTMLPreElement>(null);
     const logRef = useRef<HTMLDivElement>(null);
+
+    // Prefer the step-synchronized output; fall back to the server's full capture
+    // when there is no trace to step through.
+    const shownOutput = terminalOutput || fullStdout || '';
 
     // Auto-scroll output to bottom
     useEffect(() => {
@@ -96,13 +109,13 @@ export default function Terminal({
                             ref={outputRef}
                             className="flex-1 overflow-auto text-[12px] leading-6 text-text-secondary scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent pr-2"
                         >
-                            {terminalOutput || (
+                            {shownOutput || (
                                 <div className="h-full flex flex-col items-center justify-center opacity-30 gap-2">
                                     <div className="text-2xl">⏳</div>
                                     <div className="text-[10px]">Waiting for program execution...</div>
                                 </div>
                             )}
-                            {terminalOutput && <span className="inline-block w-2 h-4 bg-accent-cyan/40 ml-1 animate-pulse align-middle" />}
+                            {shownOutput && <span className="inline-block w-2 h-4 bg-accent-cyan/40 ml-1 animate-pulse align-middle" />}
                         </pre>
                     </div>
                 )}

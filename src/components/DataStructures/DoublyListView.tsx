@@ -1,7 +1,8 @@
-import { useState, useEffect, useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import type { DoublyState, MemoryNode } from '../../types';
 import type { NodeHighlight } from '../Visualizer';
 import { motion, AnimatePresence } from 'framer-motion';
+import { usePulse } from '../../hooks/usePulse';
 
 interface Props {
     data: DoublyState;
@@ -102,17 +103,14 @@ function orderChain(nodes: MemoryNode[], forward: Set<string>): MemoryNode[] {
     return ordered;
 }
 
-export default function DoublyListView({ data, highlight }: Props) {
+function DoublyListView({ data, highlight }: Props) {
     const { forward, back } = useMemo(() => classifyFields(data.nodes), [data.nodes]);
     const ordered = useMemo(() => orderChain(data.nodes, forward), [data.nodes, forward]);
 
-    const [pulse, setPulse] = useState<{ nodeId: string | null; property: string | null } | null>(null);
-    useEffect(() => {
-        if (!highlight || !highlight.nodeId) return;
-        setPulse({ nodeId: highlight.nodeId, property: highlight.property });
-        const t = setTimeout(() => setPulse(null), 700);
-        return () => clearTimeout(t);
-    }, [highlight]);
+    const pulse = usePulse(
+        highlight?.nodeId ? { nodeId: highlight.nodeId, property: highlight.property } : null,
+        highlight
+    );
 
     return (
         <div className="flex flex-col items-center w-full h-full justify-center gap-4 px-4 overflow-auto">
@@ -228,3 +226,5 @@ export default function DoublyListView({ data, highlight }: Props) {
         </div>
     );
 }
+
+export default memo(DoublyListView);

@@ -1,8 +1,48 @@
 services:
+  # Compiler/tracer service. It compiles and runs arbitrary user C++, so the
+  # hardening below is load-bearing, not decorative: without it the container is
+  # an unbounded remote code execution endpoint.
+  compiler:
+    build: .
+    container_name: vierasion-compiler
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      USE_GDB: "true"
+      # Point at the piston service below only if USE_GDB=false.
+      # PISTON_URL: http://piston:2000
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      # Number of proxy hops to trust, or an explicit IP/CIDR list. Leave unset
+      # when not behind a proxy — a permissive value lets clients spoof
+      # X-Forwarded-For and bypass the rate limiter.
+      TRUST_PROXY: ${TRUST_PROXY:-}
+    read_only: true
+    tmpfs:
+      # exec is required: compiled user binaries are written here and run.
+      - /tmp:exec,mode=1777,size=256m
+      - /dev/shm:exec,mode=1777,size=256m
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:./seccomp-profile.json
+    restart: unless-stopped
+
+  # Piston is only needed if you run with USE_GDB=false and want remote
+  # execution instead of the local compiler.
+  #
+  # It requires privileged mode for its own isolate-based sandboxing, which is a
+  # container-escape risk if reached by an attacker. It is therefore bound to
+  # loopback so it is reachable only from this host, never from the network.
+  # Do not publish this port publicly.
   piston:
     image: ghcr.io/engineer-man/piston
     container_name: vierasion-piston
     ports:
-      - "2000:2000"
+      - "127.0.0.1:2000:2000"
     restart: unless-stopped
     privileged: true
+    profiles:
+      - fallback

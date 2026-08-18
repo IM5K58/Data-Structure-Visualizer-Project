@@ -74,3 +74,6 @@ TEST_CASES.md
 server/debug_cases.txt
 server/sandbox/*.cpp
 server/__tracer.h
+
+#claude files
+.claude/

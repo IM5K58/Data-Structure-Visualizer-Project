@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
+import { memo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { StackState } from '../../types';
 import type { NodeHighlight } from '../Visualizer';
+import { useCountDelta } from '../../hooks/usePulse';
 
 interface Props {
     data: StackState;
@@ -9,25 +10,9 @@ interface Props {
     highlight?: NodeHighlight | null;
 }
 
-export default function StackPlate({ data }: Props) {
-    const prevCountRef = useRef(data.items.length);
-    const [lastAction, setLastAction] = useState<'push' | 'pop' | null>(null);
-
-    useEffect(() => {
-        const prevCount = prevCountRef.current;
-        const currCount = data.items.length;
-        if (currCount > prevCount) {
-            setLastAction('push');
-        } else if (currCount < prevCount) {
-            setLastAction('pop');
-        }
-        prevCountRef.current = currCount;
-
-        if (currCount !== prevCount) {
-            const timer = setTimeout(() => setLastAction(null), 800);
-            return () => clearTimeout(timer);
-        }
-    }, [data.items.length]);
+function StackPlate({ data }: Props) {
+    const delta = useCountDelta(data.items.length);
+    const lastAction = delta === 'up' ? 'push' : delta === 'down' ? 'pop' : null;
 
     return (
         <div className="flex flex-col items-center w-full h-full justify-center gap-3 px-4">
@@ -152,3 +137,5 @@ export default function StackPlate({ data }: Props) {
         </div>
     );
 }
+
+export default memo(StackPlate);
