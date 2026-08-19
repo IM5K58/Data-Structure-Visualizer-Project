@@ -4,6 +4,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { tmpdir } from 'os';
+import { childEnv } from './childEnv.js';
 import type { PistonExecuteResponse } from '../types/index.js';
 
 export interface CompileWithDebugResult {
@@ -196,12 +197,10 @@ function runProcess(
     stdin: string = ''
 ): Promise<{ stdout: string; stderr: string; code: number; signal: string | null }> {
     return new Promise((resolve) => {
-        const env = { ...process.env };
-        // Windows: MSYS2 g++ 런타임 DLL 경로 추가
-        if (process.platform === 'win32') {
-            const msysBin = 'C:\\msys64\\ucrt64\\bin';
-            env.PATH = `${msysBin};${env.PATH}`;
-        }
+        // An allowlist, not process.env: this spawns the user's own code, and
+        // dotenv has loaded server/.env by now. childEnv() also adds the MSYS2
+        // DLL directory to PATH on Windows.
+        const env = childEnv();
         // spawn의 timeout 옵션은 Windows에서 실제로 프로세스를 종료하지 않으므로 직접 구현.
         // detached on POSIX so the whole process group can be signalled — a killed
         // parent otherwise leaves forked children orphaned and still running.

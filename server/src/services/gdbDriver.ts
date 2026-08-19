@@ -5,7 +5,9 @@
 
 import { spawn, ChildProcess } from 'child_process';
 import { writeFile, rm, stat, open } from 'fs/promises';
+import { dirname } from 'path';
 import { rlimitWrapperPrefix } from './compiler.js';
+import { childEnv } from './childEnv.js';
 
 const GDB_PATH = process.env.GDB_PATH ?? (process.platform === 'win32'
     ? 'C:\\msys64\\ucrt64\\bin\\gdb.exe'
@@ -263,6 +265,63 @@ function strOf(v: unknown): string {
 
 // ===== GDB Driver =====
 
+/**
+ * The console command that runs the inferior with its stdin and stdout
+ * redirected to files. Exported and pure so CI, which has no gdb, can pin the
+ * exact string it produces.
+ *
+ * The paths are quoted. They did not used to be, and the comment explaining why
+ * was wrong on both counts:
+ *
+ *   "Temp paths are UUID-based so they never contain spaces" — true of the job
+ *   directory, not of its parent. getTempBase() returns os.tmpdir() off Linux,
+ *   which on Windows is C:\Users\<name>\AppData\Local\Temp. Any account name
+ *   with a space in it lands here.
+ *
+ *   "Inner quotes break the MI string parser" — only unescaped ones. This
+ *   string is embedded in `interpreter-exec console "<here>"`, so its quotes
+ *   have to be escaped, and GDB then accepts them.
+ *
+ * Measured against gdb 16.3 with a space in the path. Unquoted, GDB does report
+ * the problem — as `&"warning: Error in redirection: No such file or
+ * directory."` — but that is the stream channel, which handleLine() drops on
+ * sight. No ^error is ever produced, so sendMI resolves normally and the driver
+ * learns nothing. The program then runs with no redirect at all, which means
+ * its stdin and stdout are GDB's own MI pipes:
+ *
+ *   - stdin is never delivered, so a program that reads it blocks until
+ *     waitStop() times out 12s later;
+ *   - a program that does not block writes its output INTO the MI stream, where
+ *     the parser reads it as MI records — user C++ can forge *stopped there;
+ *   - programOutput is empty either way, because the file is never created.
+ *
+ * Quoted, the same run completes and the output file is correct.
+ */
+export function buildRunRedirect(
+    stdinFile: string,
+    stdoutFile: string,
+    platform: NodeJS.Platform = process.platform,
+): string {
+    const quote = (file: string): string => {
+        // GDB wants forward slashes on Windows. Not on POSIX, where a backslash
+        // is a legal filename character and rewriting it would name a different
+        // file — so there it stays, and is rejected below instead.
+        const path = platform === 'win32' ? file.replace(/\\/g, '/') : file;
+        // On Linux `run` is handed to /bin/sh, so these keep their meaning even
+        // inside the quotes. All are legal in a POSIX filename. Refuse loudly
+        // rather than emit a command that quietly means something else — the
+        // silent version of this is the bug being fixed.
+        if (/["`$\n\\]/.test(path)) {
+            throw new Error(`GDB redirect path contains an unquotable character: ${path}`);
+        }
+        return `\\"${path}\\"`;
+    };
+    return `run < ${quote(stdinFile)} > ${quote(stdoutFile)}`;
+}
+
+/** How long GDB gets to exit on its own before it is signalled. */
+const QUIT_GRACE_MS = 1000;
+
 interface PendingCmd {
     resolve: (r: { class: string; results: Record<string, unknown> }) => void;
     reject: (e: Error) => void;
@@ -280,22 +339,28 @@ export class GDBDriver {
 
     async start(binaryPath: string): Promise<void> {
         await new Promise<void>((resolve, reject) => {
-            // Windows: MSYS2 DLL들이 PATH에 있어야 컴파일된 바이너리가 실행됨
-            const env = { ...process.env };
-            if (process.platform === 'win32') {
-                const msysBin = 'C:\\msys64\\ucrt64\\bin';
-                env.PATH = `${msysBin};${env.PATH ?? ''}`;
-            }
+            // An allowlist, not process.env. GDB passes its environment straight
+            // to the inferior, so anything here is readable by the user's own
+            // C++ via getenv(). childEnv() also puts the MSYS2 DLL directory on
+            // PATH, which a compiled binary needs to start on Windows.
+            const env = childEnv();
 
             // Don't rlimit GDB itself (GDB needs heap room for its own state).
             // We apply the limits only to the inferior via `set exec-wrapper`,
             // which is sent after GDB starts (see start-of-session below).
+            // cwd is the job directory, not the server's. GDB passes its cwd to
+            // the inferior, and the server runs out of server/ — the directory
+            // holding .env — so `fopen(".env")` in the traced program read the
+            // secret straight off disk, with no path to guess and nothing the
+            // environment allowlist could do about it. Reproduced before this
+            // was added. An absolute path still reaches the file; the real
+            // answer is to stop keeping a live secret next to the server.
             this.proc = spawn(GDB_PATH, [
                 '--interpreter=mi2',
                 '--quiet',
                 '--nx',
                 binaryPath,
-            ], { stdio: ['pipe', 'pipe', 'ignore'], env });
+            ], { stdio: ['pipe', 'pipe', 'ignore'], env, cwd: dirname(binaryPath) });
 
             this.proc.stdout!.setEncoding('utf-8');
             this.proc.stdout!.on('data', (chunk: string) => {
@@ -303,21 +368,31 @@ export class GDBDriver {
                 this.flush();
             });
 
-            // Fail immediately if GDB executable is not found
-            this.proc.once('error', (err) => {
-                reject(new Error(`GDB not found at "${GDB_PATH}": ${err.message}`));
-            });
+            // A stream error is not covered by the process 'error' event, and an
+            // unhandled one on a pipe takes the server down. compiler.ts:238
+            // carries the same guard.
+            this.proc.stdin!.on('error', () => { /* GDB closed the pipe */ });
 
+            // Fail immediately if GDB executable is not found
+            const onStartError = (err: Error) => {
+                reject(new Error(`GDB not found at "${GDB_PATH}": ${err.message}`));
+            };
             // If GDB exits immediately (bad binary, wrong arch, etc.) → reject
-            this.proc.once('exit', (code) => {
+            const onStartExit = (code: number | null) => {
                 clearTimeout(t);
                 reject(new Error(`GDB exited immediately with code ${code}`));
-            });
+            };
+            this.proc.once('error', onStartError);
+            this.proc.once('exit', onStartExit);
 
-            // Give GDB time to initialize; remove listeners once we consider it started
+            // Give GDB time to initialize, then drop the two start-up listeners.
+            // Drop exactly those two, not every listener: an 'error' event with
+            // no listener at all is an uncaughtException, which would kill the
+            // server rather than fail the request.
             const t = setTimeout(() => {
-                this.proc!.removeAllListeners('error');
-                this.proc!.removeAllListeners('exit');
+                this.proc!.removeListener('error', onStartError);
+                this.proc!.removeListener('exit', onStartExit);
+                this.proc!.on('error', () => { /* reported through the MI calls */ });
                 resolve();
             }, process.platform === 'win32' ? 1500 : 800);
         });
@@ -420,13 +495,10 @@ export class GDBDriver {
     }
 
     async runWithRedirect(stdinFile: string, stdoutFile: string): Promise<GDBStopInfo> {
+        // Built before waitStop(): a bad path throws, and throwing after the
+        // wait is armed would strand stopTimer and stopResolve.
+        const cmd = buildRunRedirect(stdinFile, stdoutFile);
         const stopPromise = this.waitStop();
-        // Convert Windows backslashes to forward slashes for GDB shell.
-        // Do NOT add inner quotes — they break the MI string parser.
-        // Temp paths are UUID-based so they never contain spaces.
-        const inPath = stdinFile.replace(/\\/g, '/');
-        const outPath = stdoutFile.replace(/\\/g, '/');
-        const cmd = `run < ${inPath} > ${outPath}`;
         await this.sendMI(`interpreter-exec console "${cmd}"`).catch(() => {});
         return stopPromise;
     }
@@ -673,15 +745,51 @@ export class GDBDriver {
         }
     }
 
+    /**
+     * Tear the session down. Safe to call twice, and safe on a driver that never
+     * started — callers reach it from both the happy path and the catch.
+     */
     async quit(): Promise<void> {
-        try { this.proc?.stdin?.write('-gdb-exit\n'); } catch { /* ignore */ }
+        // Settle everything in flight first. These timers used to stay armed
+        // after teardown and fire seconds later against a process that no longer
+        // existed, rejecting into nothing.
+        for (const p of this.pending.values()) {
+            clearTimeout(p.timer);
+            p.reject(new Error('GDB session closed'));
+        }
+        this.pending.clear();
+
+        if (this.stopTimer) { clearTimeout(this.stopTimer); this.stopTimer = null; }
+        const stopReject = this.stopReject;
+        this.stopResolve = null;
+        this.stopReject = null;
+        stopReject?.(new Error('GDB session closed'));
+
+        // Claim the handle before awaiting, so a second call has nothing to do.
+        const proc = this.proc;
+        this.proc = null;
+        if (!proc) return;
+
+        // Already gone: return now. once('exit') does NOT fire for a process
+        // that exited before the listener was attached — measured — so the old
+        // code sat through its full 1000ms fallback on every error path and then
+        // signalled a pid that was no longer there.
+        if (proc.exitCode !== null || proc.signalCode !== null) return;
+
+        try { proc.stdin?.write('-gdb-exit\n'); } catch { /* pipe already closed */ }
+
+        // Only GDB is signalled. Killing its process group would need `detached`
+        // at spawn, and the premise for that — that Linux leaves the tracee
+        // running when the tracer dies — did not hold up: GDB sets
+        // PTRACE_O_EXITKILL on inferiors it starts, and it may put the inferior
+        // in its own group anyway, which a group kill would miss. Changing
+        // signal delivery on a platform this box cannot test is not worth it.
         await new Promise<void>((resolve) => {
-            if (!this.proc) { resolve(); return; }
             const t = setTimeout(() => {
-                try { this.proc?.kill('SIGKILL'); } catch { /* ignore */ }
+                try { proc.kill('SIGKILL'); } catch { /* already gone */ }
                 resolve();
-            }, 1000);
-            this.proc.once('exit', () => { clearTimeout(t); resolve(); });
+            }, QUIT_GRACE_MS);
+            proc.once('exit', () => { clearTimeout(t); resolve(); });
         });
     }
 }
@@ -726,7 +834,12 @@ export async function runGDBSession(
             console.log('  [GDB] initial stop:', stop.reason, 'at line', stop.line, 'func', stop.func);
         } catch (e) {
             console.error('  [GDB] runWithRedirect failed:', e);
-            return { snapshots: [], programOutput: '', timedOut: false, error: 'GDB failed to start or ptrace denied' };
+            // GDB is already running by this point, and the finally below only
+            // deletes the redirect files — without this the process was leaked
+            // on every failed start.
+            await driver.quit().catch(() => {});
+            const detail = e instanceof Error ? e.message : String(e);
+            return { snapshots: [], programOutput: '', timedOut: false, error: `GDB failed to start the program: ${detail}` };
         }
 
         // Remember the user's source file path from the first stop
