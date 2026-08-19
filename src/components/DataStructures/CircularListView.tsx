@@ -1,20 +1,19 @@
-import { memo, useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import type { CircularState, MemoryNode } from '../../types';
-import type { NodeHighlight } from '../Visualizer';
+import { memo, useMemo } from 'react';
+import type { CircularState, NodeHighlight } from '../../types';
+import { accentFor } from './accents';
+
+/** The wrap-around edge carries a second meaning, not the panel accent. */
+const CYCLE_BACK_STROKE = 'rgba(251, 191, 36, 0.9)';
+const CYCLE_BACK_GLOW = 'drop-shadow-[0_0_6px_rgba(251,191,36,0.4)]';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNewIds, usePulse } from '../../hooks/usePulse';
+import { usePanZoom } from './usePanZoom';
+import { NODE_CARD_W, computeCircularLayout, getCircularOrder, nodeCardHeight } from './layout';
+import { NodeCard, NodeLabels } from './NodeCard';
 
 interface Props {
     data: CircularState;
     highlight?: NodeHighlight | null;
-}
-
-interface LayoutNode {
-    node: MemoryNode;
-    x: number;
-    y: number;
-    cx: number; // node center x
-    cy: number; // node center y
 }
 
 interface CircularEdge {
@@ -27,70 +26,8 @@ interface CircularEdge {
     isNew: boolean;
 }
 
-const NODE_W = 144;
-const NODE_H_BASE = 36;
-const FIELD_H = 28;
-
-function nodeHeight(node: MemoryNode): number {
-    return NODE_H_BASE + Object.keys(node.fields).length * FIELD_H +
-        Object.keys(node.pointers).length * FIELD_H;
-}
-
-/**
- * Follow pointer chain from headId to determine circular order.
- * Returns node IDs in traversal order.
- */
-function getCircularOrder(nodes: MemoryNode[], headId: string | null): string[] {
-    if (!headId || nodes.length === 0) return nodes.map(n => n.id);
-    const nodeMap = new Map(nodes.map(n => [n.id, n]));
-    const order: string[] = [];
-    const visited = new Set<string>();
-    let current: string | null = headId;
-    while (current && !visited.has(current) && nodeMap.has(current)) {
-        visited.add(current);
-        order.push(current);
-        const node: MemoryNode = nodeMap.get(current)!;
-        const nextPtr: string | null = (Object.values(node.pointers) as (string | null)[]).find((p): p is string => !!p && !visited.has(p)) ?? null;
-        current = nextPtr ?? null;
-    }
-    // Append any unreachable nodes
-    nodes.forEach(n => { if (!visited.has(n.id)) order.push(n.id); });
-    return order;
-}
-
-function computeCircularLayout(nodes: MemoryNode[], headId: string | null): LayoutNode[] {
-    if (nodes.length === 0) return [];
-    const order = getCircularOrder(nodes, headId);
-    const nodeMap = new Map(nodes.map(n => [n.id, n]));
-    const N = order.length;
-    const R = Math.max(150, N * 50);
-    const padding = NODE_W;
-    const svgCx = R + padding;
-    const svgCy = R + padding;
-
-    return order.map((id, i) => {
-        const node = nodeMap.get(id)!;
-        const angle = (2 * Math.PI * i) / N - Math.PI / 2; // start at top
-        const cx = svgCx + R * Math.cos(angle);
-        const cy = svgCy + R * Math.sin(angle);
-        return {
-            node,
-            x: cx - NODE_W / 2,
-            y: cy - nodeHeight(node) / 2,
-            cx,
-            cy,
-        };
-    });
-}
-
 function CircularListView({ data, highlight }: Props) {
-    const mainRef = useRef<HTMLDivElement>(null);
-    const [scale, setScale] = useState(1);
-    const [offset, setOffset] = useState({ x: 0, y: 0 });
-    const isDragging = useRef(false);
-    const lastPos = useRef({ x: 0, y: 0 });
-    const hasAutocentered = useRef(false);
-
+    const accent = accentFor('circular');
     const pulse = usePulse(
         highlight?.nodeId ? { nodeId: highlight.nodeId, property: highlight.property } : null,
         highlight
@@ -99,48 +36,7 @@ function CircularListView({ data, highlight }: Props) {
     const nodeIds = useMemo(() => data.nodes.map(n => n.id), [data.nodes]);
     const newNodeIds = useNewIds(nodeIds, 1000);
 
-    useEffect(() => {
-        const container = mainRef.current;
-        if (!container) return;
-        const onWheel = (e: WheelEvent) => {
-            if (e.ctrlKey) {
-                e.preventDefault();
-                setScale(prev => Math.min(Math.max(0.3, prev - e.deltaY * 0.001), 2.5));
-            }
-        };
-        container.addEventListener('wheel', onWheel, { passive: false });
-        return () => container.removeEventListener('wheel', onWheel);
-    }, []);
-
-    const handleMouseDown = useCallback((e: React.MouseEvent) => {
-        if (e.button !== 0) return;
-        if ((e.target as HTMLElement).closest('button')) return;
-        isDragging.current = true;
-        lastPos.current = { x: e.clientX, y: e.clientY };
-        if (mainRef.current) mainRef.current.style.cursor = 'grabbing';
-
-        const onMouseMove = (ev: MouseEvent) => {
-            if (!isDragging.current) return;
-            const dx = ev.clientX - lastPos.current.x;
-            const dy = ev.clientY - lastPos.current.y;
-            setOffset(prev => ({ x: prev.x + dx, y: prev.y + dy }));
-            lastPos.current = { x: ev.clientX, y: ev.clientY };
-        };
-
-        const onMouseUp = () => {
-            isDragging.current = false;
-            if (mainRef.current) mainRef.current.style.cursor = 'grab';
-            window.removeEventListener('mousemove', onMouseMove);
-            window.removeEventListener('mouseup', onMouseUp);
-        };
-
-        window.addEventListener('mousemove', onMouseMove);
-        window.addEventListener('mouseup', onMouseUp);
-    }, []);
-
-    const resetView = () => { setScale(1); setOffset({ x: 0, y: 0 }); hasAutocentered.current = false; };
-
-    const layoutNodes = useMemo(
+    const { nodes: layoutNodes, W: svgW, H: svgH } = useMemo(
         () => computeCircularLayout(data.nodes, data.headId),
         [data.nodes, data.headId]
     );
@@ -151,28 +47,21 @@ function CircularListView({ data, highlight }: Props) {
     const allIds = useMemo(() => new Set(data.nodes.map(n => n.id)), [data.nodes]);
     const order = useMemo(() => getCircularOrder(data.nodes, data.headId), [data.nodes, data.headId]);
 
-    // Auto-center on first render
-    useEffect(() => {
-        if (layoutNodes.length === 0 || !mainRef.current) return;
-        if (hasAutocentered.current) return;
-        const container = mainRef.current;
-        const containerW = container.clientWidth;
-        const containerH = container.clientHeight;
-
-        const minX = Math.min(...layoutNodes.map(ln => ln.x));
-        const maxX = Math.max(...layoutNodes.map(ln => ln.x)) + NODE_W;
-        const minY = Math.min(...layoutNodes.map(ln => ln.y));
-        const maxY = Math.max(...layoutNodes.map(ln => ln.y + nodeHeight(ln.node)));
-
-        const treeW = maxX - minX;
-        const treeH = maxY - minY;
-
-        const offsetX = (containerW - treeW * scale) / 2 - minX * scale;
-        const offsetY = (containerH - treeH * scale) / 2 - minY * scale;
-
-        setOffset({ x: offsetX, y: offsetY });
-        hasAutocentered.current = true;
-    }, [layoutNodes, scale]);
+    const { containerProps, transformStyle, scale, zoomIn, zoomOut, reset } = usePanZoom({
+        transformOrigin: '0 0',
+        minScale: 0.3,
+        maxScale: 2.5,
+        refitKey: layoutNodes,
+        getContentBounds: () => {
+            if (layoutNodes.length === 0) return null;
+            return {
+                minX: Math.min(...layoutNodes.map(ln => ln.x)),
+                maxX: Math.max(...layoutNodes.map(ln => ln.x)) + NODE_CARD_W,
+                minY: Math.min(...layoutNodes.map(ln => ln.y)),
+                maxY: Math.max(...layoutNodes.map(ln => ln.y + nodeCardHeight(ln.node))),
+            };
+        },
+    });
 
     // Build edges following pointer chain
     const edges = useMemo<CircularEdge[]>(() => {
@@ -214,40 +103,33 @@ function CircularListView({ data, highlight }: Props) {
         return <div className="p-4 text-text-muted text-xs font-mono">/* Circular List Empty */</div>;
     }
 
-    // SVG canvas size
-    const N = layoutNodes.length;
-    const R = Math.max(150, N * 50);
-    const padding = NODE_W;
-    const svgSize = (R + padding) * 2;
-
     return (
         <div
-            ref={mainRef}
-            className="flex flex-col items-center w-full min-h-[400px] h-full relative font-mono overflow-hidden select-none bg-black/5 rounded-lg cursor-grab"
-            onMouseDown={handleMouseDown}
+            {...containerProps}
+            className="flex flex-col items-center w-full min-h-[400px] h-full relative font-mono overflow-hidden select-none bg-black/5 rounded-lg outline-none focus-visible:ring-1 focus-visible:ring-accent-cyan/40"
         >
-            <h3 className="text-xs font-bold text-amber-400 mb-4 uppercase tracking-widest absolute top-0 left-4 z-20 pointer-events-none p-4">
+            <h3 className={`text-xs font-bold ${accent.heading} mb-4 uppercase tracking-widest absolute top-0 left-4 z-20 pointer-events-none p-4`}>
                 Circular List
             </h3>
 
             <div className="absolute top-4 right-4 z-30 flex items-center gap-2 bg-bg-panel/80 backdrop-blur-md border border-border p-1.5 rounded-lg shadow-xl pointer-events-auto">
-                <button onClick={() => setScale(prev => Math.max(0.3, prev - 0.1))} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors">−</button>
-                <div className="px-2 text-[10px] font-bold text-accent-cyan min-w-[45px] text-center cursor-pointer hover:text-white" onClick={resetView}>{Math.round(scale * 100)}%</div>
-                <button onClick={() => setScale(prev => Math.min(2.5, prev + 0.1))} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors">+</button>
+                <button onClick={zoomOut} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors">−</button>
+                <div className="px-2 text-[10px] font-bold text-accent-cyan min-w-[45px] text-center cursor-pointer hover:text-white" onClick={reset}>{Math.round(scale * 100)}%</div>
+                <button onClick={zoomIn} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors">+</button>
             </div>
 
             <div
-                style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`, transformOrigin: '0 0' }}
+                style={transformStyle}
                 className="absolute inset-0"
             >
                 {/* SVG Edges */}
                 <svg
-                    style={{ width: svgSize, height: svgSize }}
+                    style={{ width: svgW, height: svgH }}
                     className="absolute pointer-events-none z-10 overflow-visible"
                 >
                     <defs>
                         <marker id="circ-arrow" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
-                            <polygon points="0 0, 6 2, 0 4" fill="rgba(74, 222, 128, 0.8)" />
+                            <polygon points="0 0, 6 2, 0 4" fill={accent.edgeArrow} />
                         </marker>
                         <marker id="circ-arrow-back" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
                             <polygon points="0 0, 6 2, 0 4" fill="rgba(251, 191, 36, 0.9)" />
@@ -274,11 +156,11 @@ function CircularListView({ data, highlight }: Props) {
                                     transition={{ duration: 0.6, ease: 'easeInOut', delay: e.isNew ? 0.2 : 0 }}
                                     d={path}
                                     fill="none"
-                                    stroke={e.isCycleBack ? 'rgba(251, 191, 36, 0.9)' : 'rgba(74, 222, 128, 0.8)'}
+                                    stroke={e.isCycleBack ? CYCLE_BACK_STROKE : accent.edgeStroke}
                                     strokeWidth={2 / scale}
                                     strokeDasharray={e.isCycleBack ? `${6 / scale} ${3 / scale}` : undefined}
                                     markerEnd={e.isCycleBack ? 'url(#circ-arrow-back)' : 'url(#circ-arrow)'}
-                                    className={e.isCycleBack ? 'drop-shadow-[0_0_6px_rgba(251,191,36,0.4)]' : 'drop-shadow-[0_0_6px_rgba(74,222,128,0.3)]'}
+                                    className={e.isCycleBack ? CYCLE_BACK_GLOW : accent.edgeGlow}
                                 />
                             );
                         })}
@@ -306,7 +188,7 @@ function CircularListView({ data, highlight }: Props) {
                                     position: 'absolute',
                                     left: x,
                                     top: y,
-                                    width: NODE_W,
+                                    width: NODE_CARD_W,
                                     transition: 'left 0.4s ease, top 0.4s ease',
                                 }}
                                 className="z-20"
@@ -330,52 +212,23 @@ function CircularListView({ data, highlight }: Props) {
                                     />
                                 )}
 
-                                <div
-                                    className={`flex flex-col items-center transition-shadow duration-500 ${
-                                        pulse?.nodeId === node.id
-                                            ? 'ring-2 ring-accent-cyan rounded-lg shadow-[0_0_30px_rgba(0,229,255,0.5)]'
-                                            : isNew || isHead ? 'shadow-[0_0_40px_rgba(251,191,36,0.3)]' : ''
-                                    }`}
-                                >
-                                    <div className="bg-bg-tertiary px-3 py-1 rounded-t-lg border border-border text-[10px] font-bold text-text-secondary w-full text-center tracking-wider z-10">
-                                        {node.type}
-                                    </div>
-                                    <div className="bg-bg-panel border border-t-0 border-border rounded-b-lg shadow-xl shadow-bg-secondary/20 overflow-hidden w-full">
-                                        {Object.entries(node.fields).map(([fname, val]) => {
-                                            const fieldPulse = pulse?.nodeId === node.id && pulse?.property === fname;
-                                            return (
-                                            <div key={fname} className={`flex border-b border-border/40 text-xs text-center transition-colors duration-500 ${fieldPulse ? 'bg-accent-cyan/20' : ''}`}>
-                                                <div className="w-[45%] p-1.5 border-r border-border/40 text-text-muted bg-black/10 text-[11px] font-mono tracking-tighter truncate">{fname}</div>
-                                                <div className="w-[55%] p-1.5 text-accent-cyan font-bold truncate">{val !== undefined ? String(val) : '?'}</div>
-                                            </div>
-                                            );
-                                        })}
-                                        {Object.entries(node.pointers).map(([pname, targetId]) => {
-                                            const ptrPulse = pulse?.nodeId === node.id && pulse?.property === pname;
-                                            return (
-                                            <div key={pname} className={`flex border-b border-border/40 text-xs transition-colors duration-500 ${ptrPulse ? 'bg-accent-cyan/25' : 'bg-amber-500/5'}`}>
-                                                <div className="w-[45%] p-1.5 border-r border-border/40 text-text-muted text-center bg-black/20 text-[11px] font-mono tracking-tighter truncate">{pname}</div>
-                                                <div className="w-[55%] p-1.5 text-amber-400 text-center tracking-tighter truncate opacity-80 font-bold bg-amber-500/5">
-                                                    {targetId ? `*${(targetId as string).slice(-4)}` : 'null'}
-                                                </div>
-                                            </div>
-                                            );
-                                        })}
-                                        {Object.keys(node.fields).length === 0 && Object.keys(node.pointers).length === 0 && (
-                                            <div className="p-4 text-center text-[10px] text-text-muted italic opacity-50 font-mono">Uninitialized</div>
-                                        )}
-                                    </div>
-                                </div>
+                                <NodeCard
+                                    node={node}
+                                    pulse={pulse}
+                                    width="100%"
+                                    restClassName={isNew || isHead ? 'shadow-[0_0_40px_rgba(251,191,36,0.3)]' : ''}
+                                    emptyText="Uninitialized"
+                                    tone={{
+                                        fieldValue: 'text-accent-cyan',
+                                        pointerRow: 'bg-amber-500/5',
+                                        pointerValue: 'text-amber-400 opacity-80 bg-amber-500/5',
+                                    }}
+                                />
 
-                                {node.labels.length > 0 && (
-                                    <div className="mt-1 flex gap-1 flex-wrap justify-center">
-                                        {node.labels.map(lbl => (
-                                            <span key={lbl} className="px-1.5 py-0.5 rounded bg-amber-500/20 text-[9px] text-amber-300 font-mono font-bold">
-                                                {lbl}
-                                            </span>
-                                        ))}
-                                    </div>
-                                )}
+                                <NodeLabels
+                                    labels={node.labels}
+                                    chipClassName="px-1.5 py-0.5 rounded bg-amber-500/20 text-[9px] text-amber-300 font-mono font-bold"
+                                />
                             </motion.div>
                         );
                     })}

@@ -1,6 +1,6 @@
 import { memo, useMemo } from 'react';
-import type { HashMapState } from '../../types';
-import type { NodeHighlight } from '../Visualizer';
+import type { HashMapState, NodeHighlight } from '../../types';
+import { accentFor } from './accents';
 import { motion, AnimatePresence } from 'framer-motion';
 import { usePulse } from '../../hooks/usePulse';
 
@@ -33,6 +33,7 @@ function bucketCountFor(entryCount: number): number {
 }
 
 function HashMapView({ data, highlight }: Props) {
+    const accent = accentFor('hashmap');
     // The reducer stored the key in command.property; Visualizer's NodeHighlight
     // forwards it as `property`.
     const pulseTarget = highlight
@@ -53,7 +54,7 @@ function HashMapView({ data, highlight }: Props) {
 
     return (
         <div className="flex flex-col items-center w-full h-full justify-center gap-3 px-4 overflow-auto">
-            <h3 className="text-xs font-bold text-pink-400 tracking-widest uppercase">
+            <h3 className={`text-xs font-bold ${accent.heading} tracking-widest uppercase`}>
                 HashMap: <span className="font-mono">{data.name}</span>
             </h3>
 

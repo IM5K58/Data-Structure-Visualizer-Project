@@ -1,4 +1,5 @@
 import type { Command, CommandType, TargetType } from '../types';
+import { classifyPointerFields, type PointerEdgeMap } from './pointerTopology';
 import type { TraceStep } from '../api/compilerApi';
 
 /**
@@ -326,56 +327,20 @@ function analyzeAndReclassify(commands: Command[]): Command[] {
         }
     }
 
-    // ── Bidirectional-pair detection ──
-    // For each ordered edge (u,v), if (v,u) also exists in the full graph, mark it.
-    // We pick a "back-edge field" by counting per-field reverse-pair occurrences:
-    // the field that participates in the most bidirectional pairs is treated as the
-    // back-pointer and stripped from the primary graph.
-    const bidirPairs = new Set<string>(); // canonical "min|max"
-    for (const [u, tgts] of fullOut) {
-        for (const v of tgts) {
-            if (fullOut.get(v)?.has(u)) {
-                const key = u < v ? `${u}|${v}` : `${v}|${u}`;
-                bidirPairs.add(key);
-            }
-        }
-    }
-
-    // Per-field count of edges that participate in a bidirectional pair
-    const fieldBidirCount = new Map<string, number>();
+    // ── Back-edge field ──
+    // The rule lives in pointerTopology so the engine and DoublyListView cannot
+    // disagree about which pointer column is the back edge.
+    const edgeMap: PointerEdgeMap = new Map();
     for (const [field, g] of fieldGraphs) {
-        let c = 0;
+        const bySource = new Map<string, string>();
+        // SET_POINTER is last-wins, so each source has at most one target.
         for (const [src, tgts] of g) {
-            for (const t of tgts) {
-                if (fullOut.get(t)?.has(src)) c++;
-            }
+            for (const t of tgts) bySource.set(src, t);
         }
-        fieldBidirCount.set(field, c);
+        edgeMap.set(field, bySource);
     }
-
-    // Identify "back-edge" fields: every edge of this field is half of a bidir pair,
-    // AND there's another field that also participates in those same pairs.
-    const backFields = new Set<string>();
-    if (bidirPairs.size > 0 && fieldGraphs.size >= 2) {
-        // Sort fields by bidir count desc; the most bidir-saturated field becomes the back-field,
-        // but only if all its edges are bidirectional (otherwise it carries unique info).
-        const sorted = [...fieldGraphs.keys()].sort(
-            (a, b) => (fieldBidirCount.get(b) ?? 0) - (fieldBidirCount.get(a) ?? 0)
-        );
-        for (const f of sorted) {
-            const g = fieldGraphs.get(f)!;
-            let total = 0;
-            for (const [, tgts] of g) total += tgts.size;
-            const bidir = fieldBidirCount.get(f) ?? 0;
-            // Strip a field only if every one of its edges is part of a bidir pair.
-            if (total > 0 && total === bidir) {
-                backFields.add(f);
-                // Stop after stripping enough fields to break all bidir pairs.
-                // (For typical cases — doubly LL, parent-pointer tree — one back-field suffices.)
-                break;
-            }
-        }
-    }
+    const { back } = classifyPointerFields(edgeMap);
+    const backFields = new Set<string>(back ? [back] : []);
 
     // ── Build primary graph (full minus back-field edges) ──
     const primaryOut = new Map<string, Set<string>>();

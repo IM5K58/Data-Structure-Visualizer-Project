@@ -28,6 +28,18 @@ export type CommandType =
 
 export type TargetType = 'stack' | 'queue' | 'memory' | 'tree' | 'circular' | 'doubly' | 'graph' | 'heap' | 'hashmap' | 'unionfind';
 
+/**
+ * What a view should flash after the current step. Lives here rather than in
+ * Visualizer.tsx because the structure registry imports the views, and the views
+ * need this type — keeping it in Visualizer would close the cycle
+ * registry → view → Visualizer → registry.
+ */
+export interface NodeHighlight {
+    nodeId: string | null;
+    property: string | null;
+    kind: CommandType;
+}
+
 export interface Command {
     type: CommandType;
     target: TargetType;

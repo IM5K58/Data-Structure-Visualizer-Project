@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import type { StackState } from '../../types';
-import type { NodeHighlight } from '../Visualizer';
+import type { StackState, NodeHighlight } from '../../types';
+import { accentFor } from './accents';
 import { useCountDelta } from '../../hooks/usePulse';
 
 interface Props {
@@ -11,13 +11,14 @@ interface Props {
 }
 
 function StackPlate({ data }: Props) {
+    const accent = accentFor('stack');
     const delta = useCountDelta(data.items.length);
     const lastAction = delta === 'up' ? 'push' : delta === 'down' ? 'pop' : null;
 
     return (
         <div className="flex flex-col items-center w-full h-full justify-center gap-3 px-4">
             {/* Title */}
-            <h3 className="text-xs font-bold text-accent-purple tracking-widest uppercase">
+            <h3 className={`text-xs font-bold ${accent.heading} tracking-widest uppercase`}>
                 Stack: <span className="font-mono">{data.name}</span>
             </h3>
 

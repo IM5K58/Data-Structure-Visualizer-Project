@@ -1,51 +1,11 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import type { DataStructureState } from '../types';
+import type { DataStructureState, NodeHighlight } from '../types';
 import type { LastChange } from '../hooks/useVisualizer';
-import StackPlate from './DataStructures/StackPlate';
-import QueueBlock from './DataStructures/QueueBlock';
-import GraphView from './DataStructures/GraphView';
-import TreeChart from './DataStructures/TreeChart';
-import CircularListView from './DataStructures/CircularListView';
-import DoublyListView from './DataStructures/DoublyListView';
-import GraphChart from './DataStructures/GraphChart';
-import HeapView from './DataStructures/HeapView';
-import HashMapView from './DataStructures/HashMapView';
-import UnionFindView from './DataStructures/UnionFindView';
-
-export interface NodeHighlight {
-    nodeId: string | null;
-    property: string | null;
-    kind: LastChange['kind'];
-}
+import { defaultPanelHeight, panelBorderFor, renderStructure } from './structureRegistry';
 
 interface Props {
     structures: DataStructureState[];
     lastChange?: LastChange | null;
-}
-
-function renderStructure(structure: DataStructureState, highlight: NodeHighlight | null) {
-    switch (structure.type) {
-        case 'stack':
-            return <StackPlate data={structure} highlight={highlight} />;
-        case 'queue':
-            return <QueueBlock data={structure} highlight={highlight} />;
-        case 'memory':
-            return <GraphView data={structure} highlight={highlight} />;
-        case 'tree':
-            return <TreeChart data={structure} highlight={highlight} />;
-        case 'circular':
-            return <CircularListView data={structure} highlight={highlight} />;
-        case 'doubly':
-            return <DoublyListView data={structure} highlight={highlight} />;
-        case 'graph':
-            return <GraphChart data={structure} highlight={highlight} />;
-        case 'heap':
-            return <HeapView data={structure} highlight={highlight} />;
-        case 'hashmap':
-            return <HashMapView data={structure} highlight={highlight} />;
-        case 'unionfind':
-            return <UnionFindView data={structure} highlight={highlight} />;
-    }
 }
 
 function structureId(structure: DataStructureState): string {
@@ -65,19 +25,6 @@ function highlightFor(structure: DataStructureState, lastChange: LastChange | nu
     };
 }
 
-const TYPE_COLORS: Record<string, string> = {
-    stack: 'border-accent-purple/20',
-    queue: 'border-accent-cyan/20',
-    memory: 'border-accent-purple/40',
-    tree: 'border-green-500/20',
-    circular: 'border-amber-500/30',
-    doubly: 'border-accent-cyan/40',
-    graph: 'border-rose-500/30',
-    heap: 'border-orange-500/30',
-    hashmap: 'border-pink-500/30',
-    unionfind: 'border-emerald-500/30',
-};
-
 export default function Visualizer({ structures, lastChange }: Props) {
     // Built once per step rather than per render. The views latch their pulse
     // animations off this object's identity, so rebuilding it on every render
@@ -91,20 +38,29 @@ export default function Visualizer({ structures, lastChange }: Props) {
         return map;
     }, [structures, lastChange]);
 
+    // The drag handler only has the panel id, so map id -> default height here
+    // rather than re-deriving it from the id string. Substring-matching the id
+    // was how a structure *named* 'graph' used to get a tree-sized panel.
+    const defaultHeights = useMemo(() => {
+        const m = new Map<string, number>();
+        for (const s of structures) m.set(structureId(s), defaultPanelHeight(s.type));
+        return m;
+    }, [structures]);
+
     const [boxDimensions, setBoxDimensions] = useState<Record<string, { w: number, h: number }>>({});
     const draggingRef = useRef<{ id: string, startY: number, startX: number, startW: number, startH: number, mode: 'v' | 'h' | 'both' } | null>(null);
 
     const onMouseDown = useCallback((id: string, mode: 'v' | 'h' | 'both', e: React.MouseEvent) => {
         const current = boxDimensions[id] || {
             w: (document.getElementById(`container-${id}`)?.clientWidth || 400),
-            h: (id.includes('memory') || id.includes('tree') || id.includes('doubly') || id.includes('graph') || id.includes('circular') ? 450 : 300)
+            h: defaultHeights.get(id) ?? 300,
         };
         draggingRef.current = { id, startY: e.clientY, startX: e.clientX, startW: current.w, startH: current.h, mode };
 
         const cursorMap = { v: 'row-resize', h: 'col-resize', both: 'nwse-resize' };
         document.body.style.cursor = cursorMap[mode];
         document.body.style.userSelect = 'none';
-    }, [boxDimensions]);
+    }, [boxDimensions, defaultHeights]);
 
     const onMouseMove = useCallback((e: MouseEvent) => {
         if (!draggingRef.current) return;
@@ -167,13 +123,7 @@ export default function Visualizer({ structures, lastChange }: Props) {
                     const id = structureId(structure);
                     const dim = boxDimensions[id] || {
                         w: -1, // -1 means use default or auto
-                        h: (
-                            structure.type === 'memory' || structure.type === 'tree'
-                            || structure.type === 'circular' || structure.type === 'doubly'
-                            || structure.type === 'graph' || structure.type === 'heap'
-                            || structure.type === 'hashmap' || structure.type === 'unionfind'
-                                ? 450 : 300
-                        )
+                        h: defaultPanelHeight(structure.type),
                     };
                     
                     return (
@@ -191,7 +141,7 @@ export default function Visualizer({ structures, lastChange }: Props) {
                                 rounded-xl border bg-bg-panel backdrop-blur-sm
                                 flex flex-col relative group transition-shadow duration-300
                                 hover:shadow-2xl hover:shadow-black/20
-                                ${TYPE_COLORS[structure.type] || 'border-border'}
+                                ${panelBorderFor(structure.type)}
                             `}
                         >
                             <div className="flex-1 flex items-center justify-center overflow-hidden p-6 relative">

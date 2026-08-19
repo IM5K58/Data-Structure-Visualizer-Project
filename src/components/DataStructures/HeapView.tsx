@@ -1,62 +1,21 @@
 import { memo, useMemo } from 'react';
-import type { HeapState } from '../../types';
-import type { NodeHighlight } from '../Visualizer';
+import type { HeapState, NodeHighlight } from '../../types';
+import { accentFor } from './accents';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNewIds, usePulse } from '../../hooks/usePulse';
+import {
+    HEAP_NODE_RADIUS as NODE_RADIUS,
+    HEAP_NODE_SIZE as NODE_SIZE,
+    heapLayout,
+} from './layout';
 
 interface Props {
     data: HeapState;
     highlight?: NodeHighlight | null;
 }
 
-interface NodeLayout {
-    id: string;
-    value: number | string | boolean;
-    cx: number;
-    cy: number;
-    arrayIndex: number;
-}
-
-// ─── Layout constants ──────────────────────────────────────────────────────
-const NODE_RADIUS = 24;          // circle radius in px (w-12 h-12 = 48 → r=24)
-const NODE_SIZE = NODE_RADIUS * 2;
-const LEVEL_HEIGHT = 80;          // vertical spacing between heap depths
-const TOP_PAD = 36;               // top padding above the root
-// Deepest-level nodes render an index label below the circle, so the bottom pad
-// must clear the radius plus that label.
-const BOT_PAD = 44;
-const MIN_W = 480;                // tree-area minimum width
-const SLOT_MIN = 56;              // minimum horizontal spacing per slot at deepest level
-
-/**
- * Lay out heap nodes by their array index. For a complete binary tree with
- * N nodes, depth d holds 2^d slots; child of slot i at depth d sits at
- * slots 2i and 2i+1 of depth d+1, so each child is centered under its
- * parent's vertical line. Width scales with the number of slots at the
- * deepest level so circles don't overlap on tall heaps.
- */
-function heapLayout(items: HeapState['items']): { nodes: NodeLayout[]; W: number; H: number } {
-    const N = items.length;
-    if (N === 0) return { nodes: [], W: MIN_W, H: TOP_PAD + BOT_PAD };
-
-    const maxDepth = Math.floor(Math.log2(N));         // 0-based deepest depth in use
-    const slotsAtMax = Math.pow(2, maxDepth);          // slots at the deepest level
-    const W = Math.max(MIN_W, slotsAtMax * SLOT_MIN);
-    const H = TOP_PAD + maxDepth * LEVEL_HEIGHT + BOT_PAD;
-
-    const nodes = items.map((item, i) => {
-        const depth = Math.floor(Math.log2(i + 1));     // 0-based depth
-        const offsetInLevel = (i + 1) - Math.pow(2, depth);
-        const slotsAtDepth = Math.pow(2, depth);
-        const cx = ((offsetInLevel + 0.5) / slotsAtDepth) * W;
-        const cy = TOP_PAD + depth * LEVEL_HEIGHT;
-        return { id: item.id, value: item.value, cx, cy, arrayIndex: i };
-    });
-
-    return { nodes, W, H };
-}
-
 function HeapView({ data, highlight }: Props) {
+    const accent = accentFor('heap');
     const { nodes, W, H } = useMemo(() => heapLayout(data.items), [data.items]);
 
     // Highlight by item id, not array index: a sift-up/sift-down moves items
@@ -70,7 +29,7 @@ function HeapView({ data, highlight }: Props) {
 
     return (
         <div className="flex flex-col items-center w-full h-full justify-center gap-3 px-4 overflow-auto">
-            <h3 className="text-xs font-bold text-orange-400 tracking-widest uppercase">
+            <h3 className={`text-xs font-bold ${accent.heading} tracking-widest uppercase`}>
                 Heap / PriorityQueue: <span className="font-mono">{data.name}</span>
             </h3>
 

@@ -1,92 +1,40 @@
-import { memo, useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import type { GraphState, MemoryNode } from '../../types';
-import type { NodeHighlight } from '../Visualizer';
+import { memo, useMemo } from 'react';
+import type { GraphState, NodeHighlight } from '../../types';
+import { accentFor } from './accents';
+
+/** A pulsed edge uses the app-wide highlight colour, not the panel accent. */
+const PULSE_STROKE = 'rgb(0, 229, 255)';
 import { motion, AnimatePresence } from 'framer-motion';
 import { usePulse } from '../../hooks/usePulse';
+import { usePanZoom } from './usePanZoom';
+import { NodeCardBody } from './NodeCard';
+import { NODE_CARD_W, buildEdges, computeRingLayout, nodeCardHeight, trimToBox } from './layout';
+import type { EdgeRender } from './layout';
 
 interface Props {
     data: GraphState;
     highlight?: NodeHighlight | null;
 }
 
-const NODE_W = 144;
-
-interface LayoutPoint {
-    node: MemoryNode;
-    cx: number; // center x
-    cy: number; // center y
-}
-
-interface EdgeRender {
-    id: string;
-    sourceId: string;
-    targetId: string;
-    field: string;
-    isBidir: boolean;
-}
-
-/**
- * Deterministic radial layout: place N nodes evenly on a circle. Stable
- * across renders because the order is taken from data.nodes (which the
- * reducer preserves in allocation order).
- */
-function radialLayout(nodes: MemoryNode[], cx: number, cy: number, radius: number): LayoutPoint[] {
-    if (nodes.length === 0) return [];
-    if (nodes.length === 1) return [{ node: nodes[0], cx, cy }];
-    return nodes.map((node, i) => {
-        const angle = (i / nodes.length) * Math.PI * 2 - Math.PI / 2; // start at top
-        return {
-            node,
-            cx: cx + radius * Math.cos(angle),
-            cy: cy + radius * Math.sin(angle),
-        };
-    });
-}
-
-/** Build the edge list and mark bidirectional pairs. */
-function buildEdges(nodes: MemoryNode[]): EdgeRender[] {
-    const ids = new Set(nodes.map(n => n.id));
-    const fullOut = new Map<string, Set<string>>();
-    for (const n of nodes) {
-        fullOut.set(n.id, new Set());
-        for (const t of Object.values(n.pointers)) {
-            if (t && ids.has(t)) fullOut.get(n.id)!.add(t);
-        }
-    }
-    const edges: EdgeRender[] = [];
-    for (const n of nodes) {
-        for (const [field, target] of Object.entries(n.pointers)) {
-            if (!target || !ids.has(target)) continue;
-            const isBidir = fullOut.get(target)?.has(n.id) ?? false;
-            edges.push({
-                id: `${n.id}-${field}-${target}`,
-                sourceId: n.id,
-                targetId: target,
-                field,
-                isBidir,
-            });
-        }
-    }
-    return edges;
-}
-
 function GraphChart({ data, highlight }: Props) {
-    const containerRef = useRef<HTMLDivElement>(null);
-    const [scale, setScale] = useState(1);
-    const [offset, setOffset] = useState({ x: 0, y: 0 });
-    const isDragging = useRef(false);
-    const lastPos = useRef({ x: 0, y: 0 });
+    const accent = accentFor('graph');
+    // Zoom range kept as it was for this view; the canvas is centred, so
+    // there is nothing to fit.
+    const { containerProps, transformStyle, scale, zoomIn, zoomOut, reset } = usePanZoom({
+        transformOrigin: 'center center',
+        minScale: 0.4,
+        maxScale: 2,
+    });
 
     const pulse = usePulse(
         highlight?.nodeId ? { nodeId: highlight.nodeId, property: highlight.property } : null,
         highlight
     );
 
-    // Layout dimensions — picked to comfortably fit up to ~12 nodes; the user
-    // can pan/zoom for larger graphs.
-    const W = 720, H = 520;
-    const layout = useMemo(
-        () => radialLayout(data.nodes, W / 2, H / 2, Math.min(W, H) * 0.35),
+    // The ring and its canvas both scale with the cards they carry. A fixed
+    // 720x520 with a constant radius overlapped cards from seven nodes on.
+    const { nodes: layout, W, H } = useMemo(
+        () => computeRingLayout(data.nodes),
         [data.nodes],
     );
     const edges = useMemo(() => buildEdges(data.nodes), [data.nodes]);
@@ -98,39 +46,6 @@ function GraphChart({ data, highlight }: Props) {
         [layout],
     );
     const posOf = (id: string) => posById.get(id);
-
-    // ── Pan / Zoom ─────────────────────────────────────────────────────────
-    const onMouseDown = (e: React.MouseEvent) => {
-        if (e.button !== 0) return;
-        if ((e.target as HTMLElement).closest('button')) return;
-        isDragging.current = true;
-        lastPos.current = { x: e.clientX, y: e.clientY };
-        if (containerRef.current) containerRef.current.style.cursor = 'grabbing';
-    };
-    const onMouseMove = useCallback((e: React.MouseEvent) => {
-        if (!isDragging.current) return;
-        setOffset(prev => ({
-            x: prev.x + (e.clientX - lastPos.current.x),
-            y: prev.y + (e.clientY - lastPos.current.y),
-        }));
-        lastPos.current = { x: e.clientX, y: e.clientY };
-    }, []);
-    const onMouseUp = useCallback(() => {
-        isDragging.current = false;
-        if (containerRef.current) containerRef.current.style.cursor = 'default';
-    }, []);
-
-    useEffect(() => {
-        const el = containerRef.current;
-        if (!el) return;
-        const onWheel = (e: WheelEvent) => {
-            if (!e.ctrlKey) return;
-            e.preventDefault();
-            setScale(s => Math.min(2, Math.max(0.4, s + (-e.deltaY * 0.001))));
-        };
-        el.addEventListener('wheel', onWheel, { passive: false });
-        return () => el.removeEventListener('wheel', onWheel);
-    }, []);
 
     // ── Edge path (SVG) ────────────────────────────────────────────────────
     function drawEdge(e: EdgeRender): { path: string; labelX: number; labelY: number } | null {
@@ -161,12 +76,15 @@ function GraphChart({ data, highlight }: Props) {
         const px = -uy * sign * 24;
         const py =  ux * sign * 24;
 
-        // Trim endpoints so arrows don't disappear into node boxes.
-        const trim = NODE_W * 0.32; // approx half-width
-        const x1 = s.cx + ux * trim;
-        const y1 = s.cy + uy * trim;
-        const x2 = t.cx - ux * trim;
-        const y2 = t.cy - uy * trim;
+        // Trim each endpoint against its OWN card box: a 3-row node can point at
+        // a 5-row one, and the old constant (NODE_CARD_W * 0.32 = 46, against a
+        // real half-width of 72) buried arrowheads inside the card.
+        const sTrim = trimToBox(ux, uy, NODE_CARD_W / 2, nodeCardHeight(s.node) / 2);
+        const tTrim = trimToBox(ux, uy, NODE_CARD_W / 2, nodeCardHeight(t.node) / 2);
+        const x1 = s.cx + ux * sTrim;
+        const y1 = s.cy + uy * sTrim;
+        const x2 = t.cx - ux * tTrim;
+        const y2 = t.cy - uy * tTrim;
 
         const cx = (x1 + x2) / 2 + px;
         const cy = (y1 + y2) / 2 + py;
@@ -180,28 +98,24 @@ function GraphChart({ data, highlight }: Props) {
 
     return (
         <div
-            ref={containerRef}
-            className="flex flex-col items-center w-full h-full relative font-mono overflow-hidden select-none bg-black/5 rounded-lg"
-            onMouseDown={onMouseDown}
-            onMouseMove={onMouseMove}
-            onMouseUp={onMouseUp}
-            onMouseLeave={onMouseUp}
+            {...containerProps}
+            className="flex flex-col items-center w-full h-full relative font-mono overflow-hidden select-none bg-black/5 rounded-lg outline-none focus-visible:ring-1 focus-visible:ring-accent-cyan/40"
         >
-            <h3 className="text-xs font-bold text-rose-400 mb-4 uppercase tracking-widest absolute top-0 left-4 z-20 pointer-events-none p-4">
+            <h3 className={`text-xs font-bold ${accent.heading} mb-4 uppercase tracking-widest absolute top-0 left-4 z-20 pointer-events-none p-4`}>
                 General Graph: <span className="text-rose-300">{data.name}</span>
             </h3>
 
             <div className="absolute top-4 right-4 z-30 flex items-center gap-2 bg-bg-panel/80 backdrop-blur-md border border-border p-1.5 rounded-lg shadow-xl">
-                <button onClick={() => setScale(s => Math.max(0.4, s - 0.1))} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors" title="Zoom Out">−</button>
-                <div onClick={() => { setScale(1); setOffset({ x: 0, y: 0 }); }} className="px-2 text-[10px] font-bold text-rose-400 min-w-[45px] text-center cursor-pointer hover:text-white" title="Reset">
+                <button onClick={zoomOut} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors" title="Zoom Out">−</button>
+                <div onClick={reset} className="px-2 text-[10px] font-bold text-rose-400 min-w-[45px] text-center cursor-pointer hover:text-white" title="Reset">
                     {Math.round(scale * 100)}%
                 </div>
-                <button onClick={() => setScale(s => Math.min(2, s + 0.1))} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors" title="Zoom In">+</button>
+                <button onClick={zoomIn} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors" title="Zoom In">+</button>
             </div>
 
             <div
                 className="relative flex-1 w-full h-full"
-                style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`, transformOrigin: 'center center' }}
+                style={transformStyle}
             >
                 <svg
                     width={W} height={H}
@@ -211,7 +125,7 @@ function GraphChart({ data, highlight }: Props) {
                 >
                     <defs>
                         <marker id="graph-arrowhead" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
-                            <polygon points="0 0, 6 2, 0 4" fill="rgba(244, 63, 94, 0.85)" />
+                            <polygon points="0 0, 6 2, 0 4" fill={accent.edgeArrow} />
                         </marker>
                     </defs>
                     {edges.map(e => {
@@ -223,10 +137,10 @@ function GraphChart({ data, highlight }: Props) {
                                 <path
                                     d={drawn.path}
                                     fill="none"
-                                    stroke={isPulsed ? 'rgb(0, 229, 255)' : 'rgba(244, 63, 94, 0.85)'}
-                                    strokeWidth={isPulsed ? 3 : 1.8}
+                                    stroke={isPulsed ? PULSE_STROKE : accent.edgeStroke}
+                                    strokeWidth={(isPulsed ? 3 : 1.8) / scale}
                                     markerEnd="url(#graph-arrowhead)"
-                                    className="drop-shadow-[0_0_4px_rgba(244,63,94,0.4)]"
+                                    className={accent.edgeGlow}
                                 />
                                 <text
                                     x={drawn.labelX}
@@ -267,31 +181,17 @@ function GraphChart({ data, highlight }: Props) {
                                             : ''
                                     }`}
                                 >
-                                    <div className="bg-bg-tertiary px-3 py-1 rounded-t-lg border border-border text-[10px] font-bold text-text-secondary text-center tracking-wider z-10" style={{ width: NODE_W }}>
-                                        {node.type}
-                                    </div>
-                                    <div className="bg-bg-panel border border-t-0 border-border rounded-b-lg shadow-xl overflow-hidden" style={{ width: NODE_W }}>
-                                        {Object.entries(node.fields).map(([fname, val]) => {
-                                            const fp = isPulsed && pulse?.property === fname;
-                                            return (
-                                                <div key={fname} className={`flex border-b border-border/40 text-xs text-center transition-colors duration-500 ${fp ? 'bg-accent-cyan/20' : ''}`}>
-                                                    <div className="w-[45%] p-1.5 border-r border-border/40 text-text-muted bg-black/10 text-[11px] font-mono tracking-tighter truncate">{fname}</div>
-                                                    <div className="w-[55%] p-1.5 text-rose-300 font-bold truncate">{val !== undefined ? String(val) : '?'}</div>
-                                                </div>
-                                            );
-                                        })}
-                                        {Object.entries(node.pointers).map(([pname, targetId]) => {
-                                            const pp = isPulsed && pulse?.property === pname;
-                                            return (
-                                                <div key={pname} className={`flex border-b border-border/40 text-xs transition-colors duration-500 ${pp ? 'bg-accent-cyan/25' : 'bg-rose-500/5'}`}>
-                                                    <div className="w-[45%] p-1.5 border-r border-border/40 text-text-muted text-center bg-black/20 text-[11px] font-mono tracking-tighter truncate">{pname}</div>
-                                                    <div className="w-[55%] p-1.5 text-rose-300 text-center tracking-tighter truncate font-bold">
-                                                        {targetId ? `*${(targetId as string).slice(-4)}` : 'null'}
-                                                    </div>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
+                                    <NodeCardBody
+                                        node={node}
+                                        pulse={pulse}
+                                        width={NODE_CARD_W}
+                                        bodyShadowClass="shadow-xl"
+                                        tone={{
+                                            fieldValue: 'text-rose-300',
+                                            pointerRow: 'bg-rose-500/5',
+                                            pointerValue: 'text-rose-400',
+                                        }}
+                                    />
                                     {node.labels.length > 0 && (
                                         <div className="mt-1 flex gap-1 flex-wrap justify-center">
                                             {node.labels.map(lbl => (

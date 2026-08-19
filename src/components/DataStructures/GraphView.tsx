@@ -1,8 +1,10 @@
-import { memo, useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import type { MemoryNode, MemoryState } from '../../types';
-import type { NodeHighlight } from '../Visualizer';
+import { memo, useState, useRef, useEffect, useMemo } from 'react';
+import type { MemoryNode, MemoryState, NodeHighlight } from '../../types';
+import { accentFor } from './accents';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNewIds, usePulse } from '../../hooks/usePulse';
+import { usePanZoom } from './usePanZoom';
+import { NodeCard } from './NodeCard';
 
 interface Props {
     data: MemoryState;
@@ -51,14 +53,18 @@ function getElementLocalPos(el: HTMLElement, targetParent: HTMLElement) {
 }
 
 function GraphView({ data, highlight }: Props) {
+    const accent = accentFor('memory');
     const containerRef = useRef<HTMLDivElement>(null);
-    const mainContainerRef = useRef<HTMLDivElement>(null);
     const [edges, setEdges] = useState<Edge[]>([]);
     const edgesRef = useRef<Edge[]>([]);
-    const [scale, setScale] = useState(1);
-    const [offset, setOffset] = useState({ x: 0, y: 0 });
-    const isDraggingPan = useRef(false);
-    const lastPos = useRef({ x: 0, y: 0 });
+
+    // Content is laid out by flexbox inside the transformed layer and the
+    // canvas is centred, so there is nothing to fit — only pan and zoom.
+    const { containerProps, transformStyle, scale, zoomIn, zoomOut, reset } = usePanZoom({
+        transformOrigin: 'center center',
+        minScale: 0.5,
+        maxScale: 2,
+    });
 
     const nodeIds = useMemo(() => data.nodes.map(n => n.id), [data.nodes]);
     const newNodeIds = useNewIds(nodeIds, 1000);
@@ -68,34 +74,6 @@ function GraphView({ data, highlight }: Props) {
         highlight?.nodeId ? { nodeId: highlight.nodeId, property: highlight.property } : null,
         highlight
     );
-
-    const handleMouseDown = (e: React.MouseEvent) => {
-        if (e.button === 0) {
-            if ((e.target as HTMLElement).closest('button')) return;
-            isDraggingPan.current = true;
-            lastPos.current = { x: e.clientX, y: e.clientY };
-            if (mainContainerRef.current) mainContainerRef.current.style.cursor = 'grabbing';
-        }
-    };
-
-    const handleMouseMove = useCallback((e: React.MouseEvent) => {
-        if (isDraggingPan.current) {
-            const dx = e.clientX - lastPos.current.x;
-            const dy = e.clientY - lastPos.current.y;
-            setOffset(prev => ({ x: prev.x + dx, y: prev.y + dy }));
-            lastPos.current = { x: e.clientX, y: e.clientY };
-        }
-    }, []);
-
-    const handleMouseUp = useCallback(() => {
-        isDraggingPan.current = false;
-        if (mainContainerRef.current) mainContainerRef.current.style.cursor = 'default';
-    }, []);
-
-    const resetView = () => {
-        setScale(1);
-        setOffset({ x: 0, y: 0 });
-    };
 
     // Check if current memory structure looks like a Stack or Linked List
     const { isStackMode, isLinkedListMode } = useMemo(() => {
@@ -186,24 +164,6 @@ function GraphView({ data, highlight }: Props) {
 
         return result;
     }, [data.nodes, isStackMode]);
-
-    // Ctrl+wheel zoom
-    useEffect(() => {
-        const container = mainContainerRef.current;
-        if (!container) return;
-
-        const onWheelNative = (e: WheelEvent) => {
-            if (e.ctrlKey) {
-                e.preventDefault();
-                e.stopPropagation();
-                const delta = -e.deltaY * 0.001;
-                setScale(prev => Math.min(Math.max(0.5, prev + delta), 2));
-            }
-        };
-
-        container.addEventListener('wheel', onWheelNative, { passive: false });
-        return () => container.removeEventListener('wheel', onWheelNative);
-    }, []);
 
     // Edge endpoints are read out of the live DOM because node boxes are laid out
     // by flexbox and animated by framer-motion. We re-measure in an animation-frame
@@ -320,7 +280,13 @@ function GraphView({ data, highlight }: Props) {
             observer.disconnect();
             if (frameId !== null) cancelAnimationFrame(frameId);
         };
-    }, [data.nodes, newNodeIds, isStackMode, isLinkedListMode, scale, offset]);
+        // `scale` and `offset` are deliberately NOT dependencies. getElementLocalPos
+        // walks offsetTop/offsetLeft, which ancestor CSS transforms do not affect,
+        // and the SVG lives inside the same transformed div as the nodes — so pan
+        // and zoom cannot change any edge coordinate. Listing them meant each
+        // mousemove of a drag tore down the ResizeObserver and restarted a
+        // forced-layout burst, roughly 60 times a second.
+    }, [data.nodes, newNodeIds, isStackMode, isLinkedListMode]);
 
     const drawPath = (e: Edge) => {
         const { x1, y1, x2, y2, targetSide } = e;
@@ -386,26 +352,22 @@ function GraphView({ data, highlight }: Props) {
 
     return (
         <div
-            ref={mainContainerRef}
-            className="flex flex-col items-center w-full min-h-[400px] h-full relative font-mono overflow-hidden select-none bg-black/5 rounded-lg"
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
+            {...containerProps}
+            className="flex flex-col items-center w-full min-h-[400px] h-full relative font-mono overflow-hidden select-none bg-black/5 rounded-lg outline-none focus-visible:ring-1 focus-visible:ring-accent-cyan/40"
         >
-            <h3 className="text-xs font-bold text-accent-purple mb-4 uppercase tracking-widest absolute top-0 left-4 z-20 pointer-events-none p-4">
+            <h3 className={`text-xs font-bold ${accent.heading} mb-4 uppercase tracking-widest absolute top-0 left-4 z-20 pointer-events-none p-4`}>
                 {isStackMode ? 'Stack Visualization' : isLinkedListMode ? 'Linked List' : 'Memory (Heap)'}
             </h3>
 
             <div className="absolute top-4 right-4 z-30 flex items-center gap-2 bg-bg-panel/80 backdrop-blur-md border border-border p-1.5 rounded-lg shadow-xl pointer-events-auto">
-                <button onClick={() => setScale(prev => Math.max(0.5, prev - 0.1))} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors" title="Zoom Out">−</button>
-                <div className="px-2 text-[10px] font-bold text-accent-cyan min-w-[45px] text-center cursor-pointer hover:text-white" onClick={resetView} title="Reset View">{Math.round(scale * 100)}%</div>
-                <button onClick={() => setScale(prev => Math.min(2, prev + 0.1))} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors" title="Zoom In">+</button>
+                <button onClick={zoomOut} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors" title="Zoom Out">−</button>
+                <div className="px-2 text-[10px] font-bold text-accent-cyan min-w-[45px] text-center cursor-pointer hover:text-white" onClick={reset} title="Reset View">{Math.round(scale * 100)}%</div>
+                <button onClick={zoomIn} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors" title="Zoom In">+</button>
             </div>
 
             <div
                 ref={containerRef}
-                style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`, transformOrigin: 'center center' }}
+                style={transformStyle}
                 className={`flex-1 w-full h-full flex ${isStackMode ? 'flex-col items-center gap-8' : isLinkedListMode ? 'flex-row items-center justify-center gap-24' : 'flex-wrap items-start justify-start gap-16'} p-24 relative transition-transform duration-100`}
             >
                 {/* Stack Bucket Overlay */}
@@ -416,7 +378,7 @@ function GraphView({ data, highlight }: Props) {
                 <svg className="absolute inset-0 w-full h-full pointer-events-none z-20 overflow-visible">
                     <defs>
                         <marker id="arrowhead" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
-                            <polygon points="0 0, 6 2, 0 4" fill="rgba(192, 132, 252, 0.8)" />
+                            <polygon points="0 0, 6 2, 0 4" fill={accent.edgeArrow} />
                         </marker>
                     </defs>
                     {edges.map(e => (
@@ -426,8 +388,8 @@ function GraphView({ data, highlight }: Props) {
                             animate={{ pathLength: 1, opacity: 0.6 }}
                             transition={{ duration: 0.8, ease: "easeInOut", delay: e.isNew ? 0.2 : 0 }}
                             d={drawPath(e)}
-                            fill="none" stroke="rgba(192, 132, 252, 1)" strokeWidth={2 / scale}
-                            markerEnd="url(#arrowhead)" className="drop-shadow-[0_0_8px_rgba(192,132,252,0.4)]"
+                            fill="none" stroke={accent.edgeStroke} strokeWidth={2 / scale}
+                            markerEnd="url(#arrowhead)" className={accent.edgeGlow}
                         />
                     ))}
                 </svg>
@@ -476,41 +438,23 @@ function GraphView({ data, highlight }: Props) {
                                     className="absolute inset-[-20px] bg-accent-purple/15 blur-[25px] rounded-full z-[-1]"
                                 />
                             )}
-                            <div
-                                id={`node-${node.id}`}
-                                className={`flex flex-col items-center relative transition-shadow duration-500 ${
-                                    pulse?.nodeId === node.id
-                                        ? 'ring-2 ring-accent-cyan rounded-lg shadow-[0_0_30px_rgba(0,229,255,0.5)]'
-                                        : isNew || isTop ? 'shadow-[0_0_40px_rgba(192,132,252,0.3)]' : ''
-                                }`}
-                            >
-                                <div className="bg-bg-tertiary px-3 py-1 rounded-t-lg border border-border text-[10px] font-bold text-text-secondary w-full text-center tracking-wider z-10">{node.type}</div>
-                                <div className="bg-bg-panel border border-t-0 border-border rounded-b-lg shadow-xl shadow-bg-secondary/20 overflow-hidden w-36 relative">
-                                    {Object.entries(node.fields).map(([fieldName, val]) => {
-                                        const fieldPulse = pulse?.nodeId === node.id && pulse?.property === fieldName;
-                                        return (
-                                        <div key={fieldName} className={`flex border-b border-border/40 text-xs text-center border-border/40 transition-colors duration-500 ${fieldPulse ? 'bg-accent-cyan/20' : ''}`}>
-                                            <div className="w-[45%] p-1.5 border-r border-border/40 text-text-muted bg-black/10 text-[11px] font-mono tracking-tighter truncate">{fieldName}</div>
-                                            <div className="w-[55%] p-1.5 text-accent-cyan font-bold truncate overflow-visible">{val !== undefined ? String(val) : '?'}</div>
-                                        </div>
-                                        );
-                                    })}
-                                    {Object.entries(node.pointers).map(([ptrName, targetId]) => {
-                                        const ptrPulse = pulse?.nodeId === node.id && pulse?.property === ptrName;
-                                        return (
-                                        <div key={ptrName} className={`flex border-b border-border/40 text-xs transition-colors duration-500 ${ptrPulse ? 'bg-accent-cyan/25' : 'bg-accent-purple/5'}`}>
-                                            <div className="w-[45%] p-1.5 border-r border-border/40 text-text-muted text-center bg-black/20 text-[11px] font-mono tracking-tighter truncate">{ptrName}</div>
-                                            <div id={`ptr-${node.id}-${ptrName}`} className="w-[55%] p-1.5 text-accent-purple text-center tracking-tighter truncate opacity-80 font-bold bg-accent-purple/5">
-                                                {targetId ? `*${(targetId as string).includes('-') ? (targetId as string).split('-')[1] : (targetId as string).slice(-4)}` : 'null'}
-                                            </div>
-                                        </div>
-                                        );
-                                    })}
-                                    {Object.keys(node.fields).length === 0 && Object.keys(node.pointers).length === 0 && (
-                                        <div className="p-4 text-center text-[10px] text-text-muted italic opacity-50 font-mono">Uninitialized Memory</div>
-                                    )}
-                                </div>
-                            </div>
+                            <NodeCard
+                                node={node}
+                                pulse={pulse}
+                                width={144}
+                                headerWidth="100%"
+                                boxId={`node-${node.id}`}
+                                boxClassName="relative"
+                                restClassName={isNew || isTop ? 'shadow-[0_0_40px_rgba(192,132,252,0.3)]' : ''}
+                                bodyClassName="relative"
+                                emptyText="Uninitialized Memory"
+                                pointerCellId={(ptrName) => `ptr-${node.id}-${ptrName}`}
+                                tone={{
+                                    fieldValue: 'text-accent-cyan overflow-visible',
+                                    pointerRow: 'bg-accent-purple/5',
+                                    pointerValue: 'text-accent-purple opacity-80 bg-accent-purple/5',
+                                }}
+                            />
                             {!isStackMode && (
                                 <div className={`mt-2 px-2 py-0.5 rounded bg-black/20 text-[9px] text-text-muted font-mono tracking-widest opacity-60 transition-colors duration-500 ${isNew ? 'text-accent-cyan opacity-100 shadow-[0_0_10px_rgba(0,229,255,0.2)]' : ''}`}>
                                     0x{(node.id as string).includes('-') ? (node.id as string).replace('item-', '') : (node.id as string).slice(-4).toUpperCase()}A4
