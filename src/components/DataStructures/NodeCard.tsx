@@ -2,6 +2,7 @@ import { memo } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import type { MemoryNode } from '../../types';
 import { abbreviatePointer } from './geometry';
+import { PULSE_RING } from './accents';
 
 /**
  * The node card, drawn five times in five files.
@@ -70,8 +71,9 @@ export interface NodeCardBodyProps {
 // ── Invariants: byte-identical in all five copies, so not part of `tone`. ────
 
 /** Applied to the box element while its node is pulsed. */
-export const NODE_CARD_PULSE_RING =
-    'ring-2 ring-accent-cyan rounded-lg shadow-[0_0_30px_rgba(0,229,255,0.5)]';
+export { PULSE_RING as NODE_CARD_PULSE_RING } from './accents';
+/** Local alias so the card body can apply the shared treatment. */
+const PULSE_RING_CLASS = PULSE_RING;
 /** Base classes of the box element. */
 export const NODE_CARD_BOX = 'flex flex-col items-center transition-shadow duration-500';
 
@@ -164,7 +166,7 @@ function Card({ restClassName = '', boxClassName = '', boxId, children, ...body 
     return (
         <div
             id={boxId}
-            className={`${NODE_CARD_BOX} ${boxClassName} ${pulsed ? NODE_CARD_PULSE_RING : restClassName}`}
+            className={`${NODE_CARD_BOX} ${boxClassName} ${pulsed ? PULSE_RING_CLASS : restClassName}`}
         >
             <NodeCardBody {...body} />
             {children}

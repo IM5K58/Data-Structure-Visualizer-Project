@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import type { StackState, NodeHighlight } from '../../types';
 import { accentFor } from './accents';
 import { useCountDelta } from '../../hooks/usePulse';
@@ -11,6 +11,7 @@ interface Props {
 }
 
 function StackPlate({ data }: Props) {
+    const reduceMotion = useReducedMotion();
     const accent = accentFor('stack');
     const delta = useCountDelta(data.items.length);
     const lastAction = delta === 'up' ? 'push' : delta === 'down' ? 'pop' : null;
@@ -95,7 +96,7 @@ function StackPlate({ data }: Props) {
                                     {isTop && (
                                         <motion.div
                                             animate={{ opacity: [0.15, 0.35, 0.15] }}
-                                            transition={{ duration: 2, repeat: Infinity }}
+                                            transition={{ duration: 2, repeat: reduceMotion ? 0 : Infinity }}
                                             className="absolute inset-[-6px] bg-accent-purple/20 blur-[12px] rounded-xl z-[-1]"
                                         />
                                     )}

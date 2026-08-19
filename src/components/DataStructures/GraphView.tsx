@@ -1,7 +1,8 @@
 import { memo, useState, useRef, useEffect, useMemo } from 'react';
 import type { MemoryNode, MemoryState, NodeHighlight } from '../../types';
+import ZoomToolbar from './ZoomToolbar';
 import { accentFor } from './accents';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useNewIds, usePulse } from '../../hooks/usePulse';
 import { usePanZoom } from './usePanZoom';
 import { NodeCard } from './NodeCard';
@@ -53,7 +54,11 @@ function getElementLocalPos(el: HTMLElement, targetParent: HTMLElement) {
 }
 
 function GraphView({ data, highlight }: Props) {
+    const reduceMotion = useReducedMotion();
     const accent = accentFor('memory');
+    // Marker ids are document-global: two panels of the same type would
+    // otherwise emit the same id and the browser would use only the first.
+    const markerId = `memory-arrow-${data.name}`;
     const containerRef = useRef<HTMLDivElement>(null);
     const [edges, setEdges] = useState<Edge[]>([]);
     const edgesRef = useRef<Edge[]>([]);
@@ -359,11 +364,14 @@ function GraphView({ data, highlight }: Props) {
                 {isStackMode ? 'Stack Visualization' : isLinkedListMode ? 'Linked List' : 'Memory (Heap)'}
             </h3>
 
-            <div className="absolute top-4 right-4 z-30 flex items-center gap-2 bg-bg-panel/80 backdrop-blur-md border border-border p-1.5 rounded-lg shadow-xl pointer-events-auto">
-                <button onClick={zoomOut} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors" title="Zoom Out">−</button>
-                <div className="px-2 text-[10px] font-bold text-accent-cyan min-w-[45px] text-center cursor-pointer hover:text-white" onClick={reset} title="Reset View">{Math.round(scale * 100)}%</div>
-                <button onClick={zoomIn} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors" title="Zoom In">+</button>
-            </div>
+            <ZoomToolbar
+                scale={scale}
+                onZoomIn={zoomIn}
+                onZoomOut={zoomOut}
+                onReset={reset}
+                tone={accent.heading}
+                label="memory graph"
+            />
 
             <div
                 ref={containerRef}
@@ -377,7 +385,7 @@ function GraphView({ data, highlight }: Props) {
 
                 <svg className="absolute inset-0 w-full h-full pointer-events-none z-20 overflow-visible">
                     <defs>
-                        <marker id="arrowhead" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
+                        <marker id={markerId} markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
                             <polygon points="0 0, 6 2, 0 4" fill={accent.edgeArrow} />
                         </marker>
                     </defs>
@@ -389,7 +397,7 @@ function GraphView({ data, highlight }: Props) {
                             transition={{ duration: 0.8, ease: "easeInOut", delay: e.isNew ? 0.2 : 0 }}
                             d={drawPath(e)}
                             fill="none" stroke={accent.edgeStroke} strokeWidth={2 / scale}
-                            markerEnd="url(#arrowhead)" className={accent.edgeGlow}
+                            markerEnd={`url(#${markerId})`} className={accent.edgeGlow}
                         />
                     ))}
                 </svg>
@@ -434,7 +442,7 @@ function GraphView({ data, highlight }: Props) {
                                 <motion.div 
                                     initial={{ opacity: 0, scale: 0.8 }}
                                     animate={{ opacity: [0, 0.4, 0], scale: [0.9, 1.2, 0.9] }}
-                                    transition={{ duration: 1.5, repeat: Infinity }}
+                                    transition={{ duration: 1.5, repeat: reduceMotion ? 0 : Infinity }}
                                     className="absolute inset-[-20px] bg-accent-purple/15 blur-[25px] rounded-full z-[-1]"
                                 />
                             )}

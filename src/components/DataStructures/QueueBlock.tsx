@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import type { QueueState, NodeHighlight } from '../../types';
 import { accentFor } from './accents';
 import { useCountDelta } from '../../hooks/usePulse';
@@ -11,6 +11,7 @@ interface Props {
 }
 
 function QueueBlock({ data }: Props) {
+    const reduceMotion = useReducedMotion();
     const accent = accentFor('queue');
     const delta = useCountDelta(data.items.length);
     const lastAction = delta === 'up' ? 'enqueue' : delta === 'down' ? 'dequeue' : null;
@@ -54,7 +55,7 @@ function QueueBlock({ data }: Props) {
                             <motion.div
                                 key={i}
                                 animate={{ opacity: [0.05, 0.2, 0.05] }}
-                                transition={{ duration: 2, repeat: Infinity, delay: i * 0.35 }}
+                                transition={{ duration: 2, repeat: reduceMotion ? 0 : Infinity, delay: i * 0.35 }}
                                 className="w-1 h-1 rounded-full bg-accent-cyan"
                             />
                         ))}
@@ -103,7 +104,7 @@ function QueueBlock({ data }: Props) {
                                             {isFront && (
                                                 <motion.div
                                                     animate={{ opacity: [0.15, 0.35, 0.15] }}
-                                                    transition={{ duration: 2, repeat: Infinity }}
+                                                    transition={{ duration: 2, repeat: reduceMotion ? 0 : Infinity }}
                                                     className="absolute inset-[-6px] bg-accent-cyan/20 blur-[12px] rounded-xl z-[-1]"
                                                 />
                                             )}

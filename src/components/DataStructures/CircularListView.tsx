@@ -1,11 +1,12 @@
 import { memo, useMemo } from 'react';
 import type { CircularState, NodeHighlight } from '../../types';
+import ZoomToolbar from './ZoomToolbar';
 import { accentFor } from './accents';
 
 /** The wrap-around edge carries a second meaning, not the panel accent. */
 const CYCLE_BACK_STROKE = 'rgba(251, 191, 36, 0.9)';
 const CYCLE_BACK_GLOW = 'drop-shadow-[0_0_6px_rgba(251,191,36,0.4)]';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useNewIds, usePulse } from '../../hooks/usePulse';
 import { usePanZoom } from './usePanZoom';
 import { NODE_CARD_W, computeCircularLayout, getCircularOrder, nodeCardHeight } from './layout';
@@ -27,7 +28,11 @@ interface CircularEdge {
 }
 
 function CircularListView({ data, highlight }: Props) {
+    const reduceMotion = useReducedMotion();
     const accent = accentFor('circular');
+    // Document-global ids collide when two circular panels render.
+    const markerId = `circ-arrow-${data.name}`;
+    const markerBackId = `circ-arrow-back-${data.name}`;
     const pulse = usePulse(
         highlight?.nodeId ? { nodeId: highlight.nodeId, property: highlight.property } : null,
         highlight
@@ -112,11 +117,14 @@ function CircularListView({ data, highlight }: Props) {
                 Circular List
             </h3>
 
-            <div className="absolute top-4 right-4 z-30 flex items-center gap-2 bg-bg-panel/80 backdrop-blur-md border border-border p-1.5 rounded-lg shadow-xl pointer-events-auto">
-                <button onClick={zoomOut} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors">−</button>
-                <div className="px-2 text-[10px] font-bold text-accent-cyan min-w-[45px] text-center cursor-pointer hover:text-white" onClick={reset}>{Math.round(scale * 100)}%</div>
-                <button onClick={zoomIn} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors">+</button>
-            </div>
+            <ZoomToolbar
+                scale={scale}
+                onZoomIn={zoomIn}
+                onZoomOut={zoomOut}
+                onReset={reset}
+                tone={accent.heading}
+                label="circular list"
+            />
 
             <div
                 style={transformStyle}
@@ -128,10 +136,10 @@ function CircularListView({ data, highlight }: Props) {
                     className="absolute pointer-events-none z-10 overflow-visible"
                 >
                     <defs>
-                        <marker id="circ-arrow" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
+                        <marker id={markerId} markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
                             <polygon points="0 0, 6 2, 0 4" fill={accent.edgeArrow} />
                         </marker>
-                        <marker id="circ-arrow-back" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
+                        <marker id={markerBackId} markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
                             <polygon points="0 0, 6 2, 0 4" fill="rgba(251, 191, 36, 0.9)" />
                         </marker>
                     </defs>
@@ -159,7 +167,7 @@ function CircularListView({ data, highlight }: Props) {
                                     stroke={e.isCycleBack ? CYCLE_BACK_STROKE : accent.edgeStroke}
                                     strokeWidth={2 / scale}
                                     strokeDasharray={e.isCycleBack ? `${6 / scale} ${3 / scale}` : undefined}
-                                    markerEnd={e.isCycleBack ? 'url(#circ-arrow-back)' : 'url(#circ-arrow)'}
+                                    markerEnd={`url(#${e.isCycleBack ? markerBackId : markerId})`}
                                     className={e.isCycleBack ? CYCLE_BACK_GLOW : accent.edgeGlow}
                                 />
                             );
@@ -207,7 +215,7 @@ function CircularListView({ data, highlight }: Props) {
                                     <motion.div
                                         initial={{ opacity: 0 }}
                                         animate={{ opacity: [0, 0.35, 0], scale: [0.9, 1.2, 0.9] }}
-                                        transition={{ duration: 1.5, repeat: Infinity }}
+                                        transition={{ duration: 1.5, repeat: reduceMotion ? 0 : Infinity }}
                                         className="absolute inset-[-20px] bg-amber-500/15 blur-[25px] rounded-full z-[-1]"
                                     />
                                 )}

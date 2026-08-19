@@ -1,6 +1,7 @@
 import { memo, useMemo } from 'react';
 import type { GraphState, NodeHighlight } from '../../types';
-import { accentFor } from './accents';
+import ZoomToolbar from './ZoomToolbar';
+import { accentFor, PULSE_RING } from './accents';
 
 /** A pulsed edge uses the app-wide highlight colour, not the panel accent. */
 const PULSE_STROKE = 'rgb(0, 229, 255)';
@@ -18,6 +19,9 @@ interface Props {
 
 function GraphChart({ data, highlight }: Props) {
     const accent = accentFor('graph');
+    // Marker ids are document-global: two panels of the same type would
+    // otherwise emit the same id and the browser would use only the first.
+    const markerId = `graph-arrow-${data.name}`;
     // Zoom range kept as it was for this view; the canvas is centred, so
     // there is nothing to fit.
     const { containerProps, transformStyle, scale, zoomIn, zoomOut, reset } = usePanZoom({
@@ -105,13 +109,14 @@ function GraphChart({ data, highlight }: Props) {
                 General Graph: <span className="text-rose-300">{data.name}</span>
             </h3>
 
-            <div className="absolute top-4 right-4 z-30 flex items-center gap-2 bg-bg-panel/80 backdrop-blur-md border border-border p-1.5 rounded-lg shadow-xl">
-                <button onClick={zoomOut} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors" title="Zoom Out">−</button>
-                <div onClick={reset} className="px-2 text-[10px] font-bold text-rose-400 min-w-[45px] text-center cursor-pointer hover:text-white" title="Reset">
-                    {Math.round(scale * 100)}%
-                </div>
-                <button onClick={zoomIn} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors" title="Zoom In">+</button>
-            </div>
+            <ZoomToolbar
+                scale={scale}
+                onZoomIn={zoomIn}
+                onZoomOut={zoomOut}
+                onReset={reset}
+                tone={accent.heading}
+                label="graph"
+            />
 
             <div
                 className="relative flex-1 w-full h-full"
@@ -124,7 +129,7 @@ function GraphChart({ data, highlight }: Props) {
                     style={{ overflow: 'visible' }}
                 >
                     <defs>
-                        <marker id="graph-arrowhead" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
+                        <marker id={markerId} markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
                             <polygon points="0 0, 6 2, 0 4" fill={accent.edgeArrow} />
                         </marker>
                     </defs>
@@ -139,7 +144,7 @@ function GraphChart({ data, highlight }: Props) {
                                     fill="none"
                                     stroke={isPulsed ? PULSE_STROKE : accent.edgeStroke}
                                     strokeWidth={(isPulsed ? 3 : 1.8) / scale}
-                                    markerEnd="url(#graph-arrowhead)"
+                                    markerEnd={`url(#${markerId})`}
                                     className={accent.edgeGlow}
                                 />
                                 <text
@@ -177,7 +182,7 @@ function GraphChart({ data, highlight }: Props) {
                                     style={{ position: 'absolute', left: cx, top: cy, transform: 'translate(-50%, -50%)' }}
                                     className={`flex flex-col items-center transition-shadow duration-500 ${
                                         isPulsed
-                                            ? 'ring-2 ring-accent-cyan rounded-lg shadow-[0_0_30px_rgba(0,229,255,0.5)]'
+                                            ? PULSE_RING
                                             : ''
                                     }`}
                                 >

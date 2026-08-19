@@ -1,6 +1,6 @@
 import { memo, useMemo } from 'react';
 import type { UnionFindState, NodeHighlight } from '../../types';
-import { accentFor } from './accents';
+import { accentFor, PULSE_CHIP, PULSE_FILL } from './accents';
 import { motion, AnimatePresence } from 'framer-motion';
 import { usePulse } from '../../hooks/usePulse';
 import { buildForest } from './layout';
@@ -94,7 +94,7 @@ function UFTree({ rootId, tree, pulsed }: { rootId: string; tree: Map<string, UF
                 layout
                 className={`px-3 py-1.5 rounded-full font-mono text-xs font-bold transition-colors duration-300 ${
                     pulsed.has(rootId)
-                        ? 'bg-accent-cyan/30 border border-accent-cyan text-white shadow-[0_0_16px_rgba(0,229,255,0.5)]'
+                        ? `${PULSE_FILL} border ${PULSE_CHIP}`
                         : 'bg-emerald-500/30 border border-emerald-400/60 text-emerald-50 shadow-[0_0_12px_rgba(16,185,129,0.3)]'
                 }`}
             >

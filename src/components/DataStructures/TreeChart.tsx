@@ -1,7 +1,8 @@
 import { memo, useMemo } from 'react';
 import type { TreeState, NodeHighlight } from '../../types';
+import ZoomToolbar from './ZoomToolbar';
 import { accentFor } from './accents';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useNewIds, usePulse } from '../../hooks/usePulse';
 import { usePanZoom } from './usePanZoom';
 import { NODE_CARD_W, computeTreeLayout, nodeCardHeight } from './layout';
@@ -22,7 +23,11 @@ interface TreeEdge {
 }
 
 function TreeChart({ data, highlight }: Props) {
+    const reduceMotion = useReducedMotion();
     const accent = accentFor('tree');
+    // Marker ids are document-global: two panels of the same type would
+    // otherwise emit the same id and the browser would use only the first.
+    const markerId = `tree-arrow-${data.name}`;
     // Pulse the most recently changed node + field for ~700ms after a step.
     const pulse = usePulse(
         highlight?.nodeId ? { nodeId: highlight.nodeId, property: highlight.property } : null,
@@ -100,11 +105,14 @@ function TreeChart({ data, highlight }: Props) {
                 Tree Visualization
             </h3>
 
-            <div className="absolute top-4 right-4 z-30 flex items-center gap-2 bg-bg-panel/80 backdrop-blur-md border border-border p-1.5 rounded-lg shadow-xl pointer-events-auto">
-                <button onClick={zoomOut} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors">−</button>
-                <div className="px-2 text-[10px] font-bold text-accent-cyan min-w-[45px] text-center cursor-pointer hover:text-white" onClick={reset}>{Math.round(scale * 100)}%</div>
-                <button onClick={zoomIn} className="w-8 h-8 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary transition-colors">+</button>
-            </div>
+            <ZoomToolbar
+                scale={scale}
+                onZoomIn={zoomIn}
+                onZoomOut={zoomOut}
+                onReset={reset}
+                tone={accent.heading}
+                label="tree"
+            />
 
             <div
                 style={transformStyle}
@@ -112,7 +120,7 @@ function TreeChart({ data, highlight }: Props) {
             >
                 <svg className="absolute inset-0 w-full h-full pointer-events-none z-10 overflow-visible">
                     <defs>
-                        <marker id="tree-arrow" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
+                        <marker id={markerId} markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
                             <polygon points="0 0, 6 2, 0 4" fill={accent.edgeArrow} />
                         </marker>
                     </defs>
@@ -134,7 +142,7 @@ function TreeChart({ data, highlight }: Props) {
                                 fill="none"
                                 stroke={accent.edgeStroke}
                                 strokeWidth={2 / scale}
-                                markerEnd="url(#tree-arrow)"
+                                markerEnd={`url(#${markerId})`}
                                 className={accent.edgeGlow}
                             />
                         );
@@ -180,7 +188,7 @@ function TreeChart({ data, highlight }: Props) {
                                     <motion.div
                                         initial={{ opacity: 0 }}
                                         animate={{ opacity: [0, 0.4, 0], scale: [0.9, 1.2, 0.9] }}
-                                        transition={{ duration: 1.5, repeat: Infinity }}
+                                        transition={{ duration: 1.5, repeat: reduceMotion ? 0 : Infinity }}
                                         className="absolute inset-[-20px] bg-green-500/15 blur-[25px] rounded-full z-[-1]"
                                     />
                                 )}

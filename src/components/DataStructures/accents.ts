@@ -90,3 +90,17 @@ export const ACCENTS: Record<TargetType, Accent> = {
 export function accentFor(type: TargetType): Accent {
     return ACCENTS[type];
 }
+
+// ── The "this just changed" treatment ──────────────────────────────────────
+// Every view flashes cyan when a node or cell is the target of the current
+// step, but the glow radius (16/24/30px), ring width (1/2) and alpha
+// (0.5/0.6) had drifted apart across the copies. One treatment, three sizes.
+
+/** A whole card or node: ring plus glow. */
+export const PULSE_RING =
+    'ring-2 ring-accent-cyan rounded-lg shadow-[0_0_24px_rgba(0,229,255,0.55)]';
+/** A chip or small element inside a card. */
+export const PULSE_CHIP =
+    'ring-1 ring-accent-cyan shadow-[0_0_14px_rgba(0,229,255,0.35)]';
+/** Fill for an element that turns cyan while pulsed. */
+export const PULSE_FILL = 'bg-accent-cyan/30 border-accent-cyan text-white';

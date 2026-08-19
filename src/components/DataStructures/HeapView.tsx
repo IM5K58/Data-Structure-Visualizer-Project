@@ -1,6 +1,6 @@
 import { memo, useMemo } from 'react';
 import type { HeapState, NodeHighlight } from '../../types';
-import { accentFor } from './accents';
+import { accentFor, PULSE_CHIP, PULSE_FILL, PULSE_RING } from './accents';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNewIds, usePulse } from '../../hooks/usePulse';
 import {
@@ -103,7 +103,7 @@ function HeapView({ data, highlight }: Props) {
                                 <div
                                     className={`w-full h-full rounded-full border flex items-center justify-center font-mono text-sm font-bold transition-shadow duration-500 ${
                                         isPulsed
-                                            ? 'bg-accent-cyan/30 border-accent-cyan text-white ring-2 ring-accent-cyan shadow-[0_0_24px_rgba(0,229,255,0.6)]'
+                                            ? `${PULSE_FILL} ${PULSE_RING}`
                                             : isRoot
                                                 ? 'bg-orange-500/30 border-orange-400/60 text-white shadow-[0_0_20px_rgba(251,146,60,0.4)]'
                                                 : 'bg-orange-500/10 border-orange-500/30 text-orange-200'
@@ -140,7 +140,7 @@ function HeapView({ data, highlight }: Props) {
                                 <div
                                     className={`w-9 h-9 flex items-center justify-center text-xs font-mono font-bold border rounded transition-colors duration-300 ${
                                         isPulsed
-                                            ? 'bg-accent-cyan/25 border-accent-cyan text-white ring-1 ring-accent-cyan'
+                                            ? `bg-accent-cyan/25 border-accent-cyan text-white ${PULSE_CHIP}`
                                             : idx === 0
                                                 ? 'bg-orange-500/25 border-orange-400/60 text-white'
                                                 : 'bg-orange-500/10 border-orange-500/30 text-orange-200'
