@@ -3,12 +3,13 @@ import { rm } from 'fs/promises';
 import { executeCode, compileWithDebug } from '../services/compiler.js';
 import { runGDBSession } from '../services/gdbDriver.js';
 import { snapshotsToTraceSteps } from '../services/gdbMapper.js';
+import { intFromEnv } from '../env.js';
 import type { CompileResponse, CompileRequest } from '../types/index.js';
 
 const router = Router();
 
 const USE_GDB = process.env.USE_GDB !== 'false'; // default: true
-const MAX_STDIN_BYTES = parseInt(process.env.MAX_STDIN_BYTES ?? `${64 * 1024}`);
+const MAX_STDIN_BYTES = intFromEnv('MAX_STDIN_BYTES', 64 * 1024);
 const VERBOSE_STEP_LOG = process.env.VERBOSE_STEP_LOG === 'true';
 
 /**

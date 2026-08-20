@@ -5,6 +5,7 @@ import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { tmpdir } from 'os';
 import { childEnv } from './childEnv.js';
+import { intFromEnv } from '../env.js';
 import type { PistonExecuteResponse } from '../types/index.js';
 
 export interface CompileWithDebugResult {
@@ -22,13 +23,15 @@ const PISTON_URL = process.env.PISTON_URL || '';
 // runaway program can't take down the host. No-op on Windows/macOS.
 //
 // All values overridable via env vars so deployers can tune per-platform.
+// intFromEnv, not parseInt: RLIMIT_AS_BYTES=256M used to parse as 256, giving
+// the traced program a 256-byte address space and a misleading ptrace error.
 const RLIMIT = {
-    cpuSec:   parseInt(process.env.RLIMIT_CPU_SEC   ?? '8'),       // CPU seconds
-    asBytes:  parseInt(process.env.RLIMIT_AS_BYTES  ?? `${256 * 1024 * 1024}`), // virtual mem
-    stackBytes: parseInt(process.env.RLIMIT_STACK_BYTES ?? `${16 * 1024 * 1024}`),
-    fsizeBytes: parseInt(process.env.RLIMIT_FSIZE_BYTES ?? `${8 * 1024 * 1024}`),
-    nofile:   parseInt(process.env.RLIMIT_NOFILE    ?? '64'),
-    nproc:    parseInt(process.env.RLIMIT_NPROC     ?? '64'),
+    cpuSec:     intFromEnv('RLIMIT_CPU_SEC', 8),                    // CPU seconds
+    asBytes:    intFromEnv('RLIMIT_AS_BYTES', 256 * 1024 * 1024),   // virtual mem
+    stackBytes: intFromEnv('RLIMIT_STACK_BYTES', 16 * 1024 * 1024),
+    fsizeBytes: intFromEnv('RLIMIT_FSIZE_BYTES', 8 * 1024 * 1024),
+    nofile:     intFromEnv('RLIMIT_NOFILE', 64),
+    nproc:      intFromEnv('RLIMIT_NPROC', 64),
 };
 const PRLIMIT_PATH = process.env.PRLIMIT_PATH ?? '/usr/bin/prlimit';
 // Probe once at module load.
@@ -58,7 +61,7 @@ if (process.platform !== 'linux') {
  * Hard cap on how much of a child's stdout/stderr we buffer. Without it,
  * `while (1) printf(...)` grows the server's heap until it dies.
  */
-const MAX_CAPTURE_BYTES = parseInt(process.env.MAX_OUTPUT_BYTES ?? `${1024 * 1024}`);
+const MAX_CAPTURE_BYTES = intFromEnv('MAX_OUTPUT_BYTES', 1024 * 1024);
 
 /**
  * Wrap a command in prlimit on Linux, otherwise return as-is.

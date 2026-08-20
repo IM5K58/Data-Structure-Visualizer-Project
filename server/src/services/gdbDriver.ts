@@ -8,6 +8,7 @@ import { writeFile, rm, stat, open } from 'fs/promises';
 import { dirname } from 'path';
 import { rlimitWrapperPrefix } from './compiler.js';
 import { childEnv } from './childEnv.js';
+import { intFromEnv } from '../env.js';
 
 const GDB_PATH = process.env.GDB_PATH ?? (process.platform === 'win32'
     ? 'C:\\msys64\\ucrt64\\bin\\gdb.exe'
@@ -15,9 +16,9 @@ const GDB_PATH = process.env.GDB_PATH ?? (process.platform === 'win32'
 
 const MAX_STEPS = 500;
 /** Wall-clock budget for one whole trace session, independent of the step cap. */
-const SESSION_BUDGET_MS = parseInt(process.env.GDB_SESSION_BUDGET_MS ?? `${45_000}`);
+const SESSION_BUDGET_MS = intFromEnv('GDB_SESSION_BUDGET_MS', 45_000);
 /** Cap on how much of the traced program's stdout we read back. */
-const MAX_OUTPUT_BYTES = parseInt(process.env.MAX_OUTPUT_BYTES ?? `${1024 * 1024}`);
+const MAX_OUTPUT_BYTES = intFromEnv('MAX_OUTPUT_BYTES', 1024 * 1024);
 /** Set VERBOSE_MI_LOG=true to echo every GDB/MI line — very noisy, debugging only. */
 const VERBOSE_MI_LOG = process.env.VERBOSE_MI_LOG === 'true';
 
@@ -487,11 +488,22 @@ export class GDBDriver {
      */
     async applyExecWrapper(): Promise<void> {
         const wrapper = rlimitWrapperPrefix();
-        if (!wrapper) return;
-        // GDB MI parses strings as quoted; embed the wrapper command literally.
-        await this.sendMI(
-            `interpreter-exec console "set exec-wrapper ${wrapper}"`,
-        ).catch(() => {});
+        if (!wrapper) return;   // not Linux, or limits deliberately disabled
+
+        // This is the ONLY thing capping the traced program's CPU, memory, file
+        // size and process count. Losing it silently means arbitrary user C++
+        // runs unbounded — the exact hole compiler.ts refuses to start with — so
+        // failure is fatal to the session rather than swallowed.
+        //
+        // Both failure shapes have to be handled. The `.catch(() => {})` that
+        // used to be here covered only a rejected promise (stdin closed, MI
+        // timeout); a failure GDB itself reports comes back as a *resolved*
+        // result whose class is 'error', which it never saw at all.
+        const res = await this.sendMI(`interpreter-exec console "set exec-wrapper ${wrapper}"`);
+        if (res.class !== 'done') {
+            const msg = typeof res.results.msg === 'string' ? res.results.msg : res.class;
+            throw new Error(`GDB rejected the resource-limit wrapper: ${msg}`);
+        }
     }
 
     async runWithRedirect(stdinFile: string, stdoutFile: string): Promise<GDBStopInfo> {
@@ -864,7 +876,7 @@ export async function runGDBSession(
             // Skip CRT/runtime frames — only collect snapshots inside user source
             if (stop.file && userSrcFile && stop.file !== userSrcFile) {
                 const nextStop = await driver.next();
-                if (!nextStop) break;
+                if (!nextStop) { timedOut = true; break; }
                 stop = nextStop;
                 steps++;
                 continue;
@@ -976,8 +988,15 @@ export async function runGDBSession(
             const callStack = await driver.getCallStack();
             snapshots.push({ line: stop.line, func: stop.func, locals, structData, valueStructData, arrayReadings, stlContainers, callStack });
 
+            // next() returns null only when the step failed — it swallows its own
+            // 6s stop timeout. A program that simply ended produces a *stopped
+            // with a terminal reason instead, and breaks at the top of the loop.
+            // So this branch means GDB stopped responding, and the trace is a
+            // prefix. It used to break with timedOut still false, which sent a
+            // truncated trace back as HTTP 200 success, indistinguishable from a
+            // program that ran to completion.
             const nextStop = await driver.next();
-            if (!nextStop) break;
+            if (!nextStop) { timedOut = true; break; }
             stop = nextStop;
             steps++;
         }
