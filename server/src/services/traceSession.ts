@@ -18,6 +18,12 @@ const MAX_STEPS = 500;
 const SESSION_BUDGET_MS = intFromEnv('GDB_SESSION_BUDGET_MS', 45_000);
 /** Cap on how much of the traced program's stdout we read back. */
 const MAX_OUTPUT_BYTES = intFromEnv('MAX_OUTPUT_BYTES', 1024 * 1024);
+/**
+ * Largest container size treated as real. Anything past this is uninitialised
+ * memory being read as a size, not a container anyone is visualising — nothing
+ * on screen can show thousands of elements usefully anyway.
+ */
+const MAX_CONTAINER_ELEMENTS = intFromEnv('MAX_CONTAINER_ELEMENTS', 4096);
 
 export interface GDBSessionResult {
     snapshots: GDBSnapshot[];
@@ -173,6 +179,18 @@ export async function runGDBSession(
                 const sizeStr = await driver.evaluateExpression(`${local.name}.size()`);
                 const size = parseInt(sizeStr);
                 if (isNaN(size) || size < 0) continue;
+
+                // A container is only "constructed" once its constructor has
+                // run, and the first stop in a function is its prologue — so
+                // size() there reads whatever was on the stack. Measured in the
+                // deployment container: a three-line program that merely
+                // declares `std::vector<int> v` reported size 27,767,532,377,092,
+                // and the mapper builds one command per element. That is how a
+                // vector, the most common container there is, killed the server.
+                if (size > MAX_CONTAINER_ELEMENTS) {
+                    console.warn(`  [GDB] ignoring ${local.name}: size ${size} is not a real container`);
+                    continue;
+                }
 
                 let pushValue: string | undefined;
                 let entries: { key: string; value: string }[] | undefined;

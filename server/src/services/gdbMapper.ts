@@ -84,6 +84,21 @@ function guessHint(): 'node' {
 
 // ===== Core Mapper =====
 
+/**
+ * Ceiling on how many PUSH/POP commands one container change may produce.
+ *
+ * Every element here becomes an object in the returned array. A size read from
+ * uninitialised memory — which is what `v.size()` gives before the constructor
+ * has run — once produced a loop of 27 trillion iterations and killed the
+ * server. traceSession rejects such sizes at the source; this is the second
+ * line, because this is the file that turns a number into allocations.
+ */
+const MAX_CONTAINER_COMMANDS = 4096;
+
+function boundedCount(from: number, to: number): number {
+    return Math.min(Math.abs(to - from), MAX_CONTAINER_COMMANDS);
+}
+
 export function snapshotsToTraceSteps(
     snapshots: GDBSnapshot[],
     programOutput: string,
@@ -416,7 +431,8 @@ export function snapshotsToTraceSteps(
                         });
                     }
                 } else if ((hint === 'stack' || hint === 'queue' || hint === 'heap') && info.size > 0 && info.pushValue !== undefined) {
-                    for (let i = 0; i < info.size; i++) {
+                    const n = Math.min(info.size, MAX_CONTAINER_COMMANDS);
+                    for (let i = 0; i < n; i++) {
                         push({
                             line: snap.line,
                             type: 'PUSH',
@@ -466,7 +482,8 @@ export function snapshotsToTraceSteps(
 
             if (info.size > prev.size) {
                 const value = info.pushValue ?? '';
-                for (let i = prev.size; i < info.size; i++) {
+                const grew = boundedCount(prev.size, info.size);
+                for (let i = 0; i < grew; i++) {
                     push({
                         line: snap.line,
                         type: 'PUSH',
@@ -476,7 +493,8 @@ export function snapshotsToTraceSteps(
                     });
                 }
             } else {
-                for (let i = prev.size; i > info.size; i--) {
+                const shrank = boundedCount(info.size, prev.size);
+                for (let i = 0; i < shrank; i++) {
                     push({
                         line: snap.line,
                         type: 'POP',
