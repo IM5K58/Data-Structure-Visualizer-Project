@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { snapshotsToTraceSteps } from '../gdbMapper.js';
-import type { GDBSnapshot, GDBField, GDBLocal } from '../gdbDriver.js';
+import type { GDBSnapshot, GDBField, GDBLocal } from '../gdbTypes.js';
 
 /**
  * Build a snapshot for a single by-value struct local (the array-backed

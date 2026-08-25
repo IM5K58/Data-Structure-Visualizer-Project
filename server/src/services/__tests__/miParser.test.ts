@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseMI } from '../gdbDriver.js';
+import { parseMI } from '../miParser.js';
 
 /**
  * The MI parser's one hard requirement is that it terminates.

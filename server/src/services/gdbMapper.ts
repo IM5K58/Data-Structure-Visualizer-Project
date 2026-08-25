@@ -4,8 +4,8 @@
  * that are compatible with the existing frontend stepMapper.
  */
 
-import type { GDBSnapshot, GDBField, GDBLocal, STLSnapshot } from './gdbDriver.js';
-import { isPointerType, isNullPointer, isIntegralType } from './gdbDriver.js';
+import type { GDBSnapshot, GDBField, GDBLocal, STLSnapshot } from './gdbTypes.js';
+import { isPointerType, isNullPointer, isIntegralType } from './gdbValues.js';
 import type { TraceStep } from '../types/index.js';
 
 export type { TraceStep };

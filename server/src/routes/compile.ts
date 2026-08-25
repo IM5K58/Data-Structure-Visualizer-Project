@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { rm } from 'fs/promises';
 import { executeCode, compileWithDebug } from '../services/compiler.js';
-import { runGDBSession } from '../services/gdbDriver.js';
+import { runGDBSession } from '../services/traceSession.js';
 import { snapshotsToTraceSteps } from '../services/gdbMapper.js';
 import { intFromEnv } from '../env.js';
 import { Slots } from '../slots.js';

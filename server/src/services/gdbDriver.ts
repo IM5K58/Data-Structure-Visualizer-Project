@@ -1,288 +1,24 @@
 /**
- * GDB Machine Interface (MI) 드라이버
- * GDB를 --interpreter=mi2 모드로 실행하여 C++ 프로그램을 라인별로 추적합니다.
+ * GDB Machine Interface (MI) driver.
+ *
+ * Owns exactly one GDB process: spawning it, speaking MI to it, and taking it
+ * down again. What to ask it for lives one level up, in traceSession.ts.
  */
 
 import { spawn, ChildProcess } from 'child_process';
-import { writeFile, rm, stat, open } from 'fs/promises';
 import { dirname } from 'path';
 import { rlimitWrapperPrefix } from './compiler.js';
 import { childEnv } from './childEnv.js';
-import { intFromEnv } from '../env.js';
+import { parseMI } from './miParser.js';
+import { stripGDBAnnotation, strOf } from './gdbValues.js';
+import type { GDBLocal, GDBField, GDBStopInfo } from './gdbTypes.js';
 
 const GDB_PATH = process.env.GDB_PATH ?? (process.platform === 'win32'
     ? 'C:\\msys64\\ucrt64\\bin\\gdb.exe'
     : '/usr/bin/gdb');
 
-const MAX_STEPS = 500;
-/** Wall-clock budget for one whole trace session, independent of the step cap. */
-const SESSION_BUDGET_MS = intFromEnv('GDB_SESSION_BUDGET_MS', 45_000);
-/** Cap on how much of the traced program's stdout we read back. */
-const MAX_OUTPUT_BYTES = intFromEnv('MAX_OUTPUT_BYTES', 1024 * 1024);
 /** Set VERBOSE_MI_LOG=true to echo every GDB/MI line — very noisy, debugging only. */
 const VERBOSE_MI_LOG = process.env.VERBOSE_MI_LOG === 'true';
-
-// ===== Public Types =====
-
-export interface GDBLocal {
-    name: string;
-    type: string;
-    value: string;     // stripped address (no GDB annotation)
-    rawValue: string;  // original GDB value, may contain " <symbol>"
-}
-
-export interface GDBField {
-    name: string;   // field name (e.g., "data", "next")
-    type: string;   // C++ type (e.g., "int", "Node *")
-    value: string;  // value as string
-}
-
-export interface GDBStopInfo {
-    reason: string;
-    line: number;
-    file: string;
-    func: string;
-}
-
-export type STLKind = 'stack' | 'queue' | 'priority_queue' | 'vector' | 'deque' | 'unordered_map' | 'map';
-
-export interface STLSnapshot {
-    kind: STLKind;
-    size: number;
-    /** Most-recently-pushed value (top() for stack/PQ, back() for vector/deque/queue). */
-    pushValue?: string;
-    /** For map/unordered_map: enumerated entries, captured via pretty printer. */
-    entries?: { key: string; value: string }[];
-}
-
-export interface GDBSnapshot {
-    line: number;
-    func: string;
-    locals: GDBLocal[];
-    /** addr (hex string) → struct fields at that address (pointer-based nodes) */
-    structData: Map<string, GDBField[]>;
-    /** varName → fields (scalar + array metadata) for stack-allocated structs */
-    valueStructData: Map<string, GDBField[]>;
-    /** "varName.field[idx]" → element value (for array-based Stack/Queue) */
-    arrayReadings: Map<string, string>;
-    /** varName → STL container observation (size + most recent push value) */
-    stlContainers: Map<string, STLSnapshot>;
-    /** Call stack: outermost → innermost function names (e.g. ['main','solve','dfs']) */
-    callStack: string[];
-}
-
-export interface GDBSessionResult {
-    snapshots: GDBSnapshot[];
-    programOutput: string;
-    timedOut: boolean;
-    error?: string;
-    /** The caller asked to stop; whatever is here is a partial trace nobody
-     *  is waiting for. */
-    aborted?: boolean;
-}
-
-// ===== GDB MI Parser =====
-
-/**
- * GDB MI 값 파서. 문법: value = string | tuple | list
- * Examples:
- *   "hello"
- *   {name="x",type="int",value="5"}
- *   [{name="x",...},{name="y",...}]
- *   [child={exp="data",value="42",type="int"},...]
- */
-class MIParser {
-    private pos = 0;
-    constructor(private str: string) {}
-
-    parseResults(): Record<string, unknown> {
-        const obj: Record<string, unknown> = {};
-        while (this.pos < this.str.length) {
-            this.skipWS();
-            const key = this.parseIdent();
-            if (!key) { this.pos++; continue; }
-            this.skipWS();
-            if (this.str[this.pos] === '=') {
-                this.pos++;
-                obj[key] = this.parseValue();
-            }
-            if (this.str[this.pos] === ',') this.pos++;
-        }
-        return obj;
-    }
-
-    private parseValue(): unknown {
-        this.skipWS();
-        const ch = this.str[this.pos];
-        if (ch === '"') return this.parseString();
-        if (ch === '{') return this.parseTuple();
-        if (ch === '[') return this.parseList();
-        return this.parseIdent();
-    }
-
-    parseString(): string {
-        this.pos++; // skip opening "
-        let result = '';
-        while (this.pos < this.str.length && this.str[this.pos] !== '"') {
-            if (this.str[this.pos] === '\\') {
-                this.pos++;
-                const esc = this.str[this.pos] ?? '';
-                result += esc === 'n' ? '\n' : esc === 't' ? '\t' : esc;
-            } else {
-                result += this.str[this.pos];
-            }
-            this.pos++;
-        }
-        if (this.str[this.pos] === '"') this.pos++;
-        return result;
-    }
-
-    private parseTuple(): Record<string, unknown> {
-        this.pos++; // skip {
-        const obj: Record<string, unknown> = {};
-        while (this.pos < this.str.length && this.str[this.pos] !== '}') {
-            this.skipWS();
-            const key = this.parseIdent();
-            if (!key) { this.pos++; continue; }
-            this.skipWS();
-            if (this.str[this.pos] === '=') {
-                this.pos++;
-                obj[key] = this.parseValue();
-            }
-            if (this.str[this.pos] === ',') this.pos++;
-        }
-        if (this.str[this.pos] === '}') this.pos++;
-        return obj;
-    }
-
-    private parseList(): unknown[] {
-        this.pos++; // skip [
-        const arr: unknown[] = [];
-        while (this.pos < this.str.length && this.str[this.pos] !== ']') {
-            const loopStart = this.pos;
-            this.skipWS();
-            // Check if it's a key=value pair (e.g., "child={...}")
-            const savedPos = this.pos;
-            const key = this.parseIdent();
-            this.skipWS();
-            if (key && this.str[this.pos] === '=') {
-                this.pos++;
-                arr.push(this.parseValue()); // push value only, discard key
-            } else {
-                this.pos = savedPos;
-                arr.push(this.parseValue());
-            }
-            if (this.str[this.pos] === ',') this.pos++;
-
-            // parseValue can consume nothing: a character that is not a quote, a
-            // brace, a bracket or an identifier character leaves pos exactly
-            // where it was, and this loop spins on it forever. That runs inside
-            // the stdout 'data' handler, so it takes the whole event loop with
-            // it — the server stops answering, it does not just fail a request.
-            // parseResults and parseTuple both guard this; this one did not.
-            if (this.pos === loopStart) this.pos++;
-        }
-        if (this.str[this.pos] === ']') this.pos++;
-        return arr;
-    }
-
-    private parseIdent(): string {
-        let result = '';
-        while (this.pos < this.str.length && /[\w\-.]/.test(this.str[this.pos])) {
-            result += this.str[this.pos++];
-        }
-        return result;
-    }
-
-    private skipWS(): void {
-        while (this.pos < this.str.length &&
-               (this.str[this.pos] === ' ' || this.str[this.pos] === '\t')) {
-            this.pos++;
-        }
-    }
-}
-
-/**
- * Parse an MI result payload. Exported so CI can hold the parser to its one
- * hard requirement: it must always terminate. Its input is whatever arrives on
- * GDB's stdout, and it runs inside the 'data' handler, so a parser that hangs
- * hangs the server.
- */
-export function parseMI(str: string): Record<string, unknown> {
-    return new MIParser(str).parseResults();
-}
-
-// ===== Helpers =====
-
-/**
- * GDB often annotates pointer values with symbol names, e.g.:
- *   "0x70ba40 <Node::Node()>"  or  "0x7ff7313d7040 <__native_startup_lock>"
- * Strip everything after the first space to get the raw hex address.
- */
-export function stripGDBAnnotation(val: string): string {
-    return val.split(' ')[0].trim();
-}
-
-export function isNullPointer(val: string): boolean {
-    const raw = stripGDBAnnotation(val);
-    return raw === '0x0' || raw === '0' || raw === '(null)' || raw === 'NULL' || raw === '';
-}
-
-export function isPointerType(type: string): boolean {
-    return type.trimEnd().endsWith('*');
-}
-
-/**
- * Returns true if the type looks like a user-defined struct/class
- * (not a primitive, not a pointer, not an array, not a std:: type).
- */
-export function isStructType(type: string): boolean {
-    if (isPointerType(type)) return false;
-    if (type.includes('[')) return false;
-    if (type.includes('&')) return false;
-    if (type.includes('std::')) return false;
-    const clean = type
-        .replace(/\b(const|volatile|unsigned|long|short|signed|struct|class)\b/g, '')
-        .trim();
-    return !/^(int|char|bool|float|double|void|size_t|ptrdiff_t|wchar_t|auto)$/.test(clean)
-        && clean.length > 0;
-}
-
-/** True if the type is a plain integer-like scalar (used to detect index fields). */
-export function isIntegralType(type: string): boolean {
-    const clean = type
-        .replace(/\b(const|volatile|unsigned|long|short|signed)\b/g, '')
-        .trim();
-    return /^(int|char|size_t|ptrdiff_t)$/.test(clean);
-}
-
-/**
- * Detect supported STL container types by GDB type string.
- * Returns the kind (stack/queue/...) or null if not a supported STL container.
- *
- * Type strings come back from GDB with full template params, e.g.:
- *   "std::stack<int, std::deque<int, std::allocator<int> > >"
- *   "std::vector<int, std::allocator<int> >"
- *
- * We match the leading "std::<name><" prefix.
- */
-export function detectSTL(type: string): STLKind | null {
-    const t = type.trimStart();
-    if (/^std::stack\s*</.test(t))           return 'stack';
-    if (/^std::priority_queue\s*</.test(t))  return 'priority_queue';
-    if (/^std::queue\s*</.test(t))           return 'queue';
-    if (/^std::vector\s*</.test(t))          return 'vector';
-    if (/^std::deque\s*</.test(t))           return 'deque';
-    if (/^std::unordered_map\s*</.test(t))   return 'unordered_map';
-    if (/^std::map\s*</.test(t))             return 'map';
-    return null;
-}
-
-function strOf(v: unknown): string {
-    return v == null ? '' : String(v);
-}
-
-// ===== GDB Driver =====
 
 /**
  * The console command that runs the inferior with its stdin and stdout
@@ -341,6 +77,40 @@ export function buildRunRedirect(
 /** How long GDB gets to exit on its own before it is signalled. */
 const QUIT_GRACE_MS = 1000;
 
+/**
+ * How a GDB process gets created. The class is otherwise entirely about the MI
+ * protocol — tokens, pending commands, stop events, timers — and that is the
+ * part worth testing, so it is the one thing that gets injected.
+ */
+export type GdbSpawner = (binaryPath: string) => ChildProcess;
+
+const spawnGdbProcess: GdbSpawner = (binaryPath) => spawn(GDB_PATH, [
+    '--interpreter=mi2',
+    '--quiet',
+    '--nx',
+    binaryPath,
+], {
+    stdio: ['pipe', 'pipe', 'ignore'],
+    // An allowlist, not process.env. GDB passes its environment straight to the
+    // inferior, so anything here is readable by the user's own C++ via
+    // getenv(). childEnv() also puts the MSYS2 DLL directory on PATH, which a
+    // compiled binary needs to start on Windows.
+    env: childEnv(),
+    // cwd is the job directory, not the server's. GDB passes its cwd to the
+    // inferior, and the server runs out of server/ — the directory holding
+    // .env — so `fopen(".env")` in the traced program read the secret straight
+    // off disk, with no path to guess and nothing the environment allowlist
+    // could do about it. Reproduced before this was added.
+    cwd: dirname(binaryPath),
+});
+
+export interface GDBDriverOptions {
+    /** Override how GDB is created. Tests pass a fake process here. */
+    spawn?: GdbSpawner;
+    /** How long GDB gets to initialise before start() resolves. */
+    startupMs?: number;
+}
+
 interface PendingCmd {
     resolve: (r: { class: string; results: Record<string, unknown> }) => void;
     reject: (e: Error) => void;
@@ -356,30 +126,21 @@ export class GDBDriver {
     private stopReject: ((e: Error) => void) | null = null;
     private stopTimer: ReturnType<typeof setTimeout> | null = null;
 
+    private readonly spawnGdb: GdbSpawner;
+    private readonly startupMs: number;
+
+    constructor(options: GDBDriverOptions = {}) {
+        this.spawnGdb = options.spawn ?? spawnGdbProcess;
+        this.startupMs = options.startupMs
+            ?? (process.platform === 'win32' ? 1500 : 800);
+    }
+
     async start(binaryPath: string): Promise<void> {
         await new Promise<void>((resolve, reject) => {
-            // An allowlist, not process.env. GDB passes its environment straight
-            // to the inferior, so anything here is readable by the user's own
-            // C++ via getenv(). childEnv() also puts the MSYS2 DLL directory on
-            // PATH, which a compiled binary needs to start on Windows.
-            const env = childEnv();
-
-            // Don't rlimit GDB itself (GDB needs heap room for its own state).
-            // We apply the limits only to the inferior via `set exec-wrapper`,
-            // which is sent after GDB starts (see start-of-session below).
-            // cwd is the job directory, not the server's. GDB passes its cwd to
-            // the inferior, and the server runs out of server/ — the directory
-            // holding .env — so `fopen(".env")` in the traced program read the
-            // secret straight off disk, with no path to guess and nothing the
-            // environment allowlist could do about it. Reproduced before this
-            // was added. An absolute path still reaches the file; the real
-            // answer is to stop keeping a live secret next to the server.
-            this.proc = spawn(GDB_PATH, [
-                '--interpreter=mi2',
-                '--quiet',
-                '--nx',
-                binaryPath,
-            ], { stdio: ['pipe', 'pipe', 'ignore'], env, cwd: dirname(binaryPath) });
+            // GDB itself is deliberately not rlimited — it needs heap room for
+            // its own state. The limits go on the inferior instead, via
+            // `set exec-wrapper` once GDB is up.
+            this.proc = this.spawnGdb(binaryPath);
 
             this.proc.stdout!.setEncoding('utf-8');
             this.proc.stdout!.on('data', (chunk: string) => {
@@ -413,7 +174,7 @@ export class GDBDriver {
                 this.proc!.removeListener('exit', onStartExit);
                 this.proc!.on('error', () => { /* reported through the MI calls */ });
                 resolve();
-            }, process.platform === 'win32' ? 1500 : 800);
+            }, this.startupMs);
         });
     }
 
@@ -485,7 +246,7 @@ export class GDBDriver {
     }
 
     private waitStop(ms = 12000): Promise<GDBStopInfo> {
-        return new Promise((resolve, reject) => {
+        const waiting = new Promise<GDBStopInfo>((resolve, reject) => {
             this.stopResolve = resolve;
             this.stopReject = reject;
             this.stopTimer = setTimeout(() => {
@@ -494,6 +255,15 @@ export class GDBDriver {
                 reject(new Error('GDB stop timeout'));
             }, ms);
         });
+
+        // Every caller arms this wait BEFORE awaiting the MI command that will
+        // cause the stop, and some of them wait for less time than sendMI's own
+        // 8s timeout — next() gives it 6s, finishInferior 3s. In that window the
+        // rejection lands with nothing attached to it yet, and an unhandled
+        // rejection is fatal to the process by default in Node. Claim it here;
+        // the real awaiter still sees the rejection through `waiting`.
+        waiting.catch(() => { /* the caller handles the real one */ });
+        return waiting;
     }
 
     async setBreakpoint(location: string): Promise<void> {
@@ -843,272 +613,5 @@ export class GDBDriver {
             }, QUIT_GRACE_MS);
             proc.once('exit', () => { clearTimeout(t); resolve(); });
         });
-    }
-}
-
-// ===== Session Runner =====
-
-function delay(ms: number): Promise<void> {
-    return new Promise(r => setTimeout(r, ms));
-}
-
-function isTerminalReason(reason: string): boolean {
-    return reason.startsWith('exited') || reason === 'signal-received';
-}
-
-/**
- * GDB 세션을 실행하여 라인별 변수 스냅샷을 수집합니다.
- */
-export async function runGDBSession(
-    binaryPath: string,
-    stdinContent: string,
-    /** Checked once per step. Return true to stop early — used to drop the work
-     *  when the client that asked for it has gone away. */
-    shouldAbort: () => boolean = () => false,
-): Promise<GDBSessionResult> {
-    const stdinFile = `${binaryPath}.stdin`;
-    const stdoutFile = `${binaryPath}.stdout`;
-
-    await writeFile(stdinFile, stdinContent, 'utf-8');
-    await writeFile(stdoutFile, '', 'utf-8');
-
-    const driver = new GDBDriver();
-    let timedOut = false;
-    let aborted = false;
-
-    try {
-        console.log('  [GDB] starting with binary:', binaryPath);
-        await driver.start(binaryPath);
-        console.log('  [GDB] started OK, setting breakpoint at main');
-        await driver.setBreakpoint('main');
-        await driver.applyExecWrapper();
-        console.log('  [GDB] breakpoint set, running with redirect');
-
-        let stop: GDBStopInfo;
-        try {
-            stop = await driver.runWithRedirect(stdinFile, stdoutFile);
-            console.log('  [GDB] initial stop:', stop.reason, 'at line', stop.line, 'func', stop.func);
-        } catch (e) {
-            console.error('  [GDB] runWithRedirect failed:', e);
-            // GDB is already running by this point, and the finally below only
-            // deletes the redirect files — without this the process was leaked
-            // on every failed start.
-            await driver.quit().catch(() => {});
-            const detail = e instanceof Error ? e.message : String(e);
-            return { snapshots: [], programOutput: '', timedOut: false, error: `GDB failed to start the program: ${detail}` };
-        }
-
-        // Remember the user's source file path from the first stop
-        const userSrcFile = stop.file; // e.g. "C:/Temp/.../main.cpp"
-
-        const snapshots: GDBSnapshot[] = [];
-        let steps = 0;
-        // MAX_STEPS alone does not bound wall-clock time: each step issues one
-        // `exec-next` plus up to ~50 pointer inspections and per-container
-        // evaluations, each with its own MI timeout. Without a deadline a single
-        // request can hold a GDB process for many minutes.
-        const deadline = Date.now() + SESSION_BUDGET_MS;
-
-        while (steps < MAX_STEPS) {
-            if (isTerminalReason(stop.reason)) break;
-
-            // Nobody is waiting for this any more. Stop stepping; the teardown
-            // below still runs, so GDB and the program are cleaned up properly.
-            if (shouldAbort()) {
-                console.log(`  [GDB] abandoning trace after ${steps} steps — caller gave up`);
-                aborted = true;
-                break;
-            }
-
-            // Execution has left the user's code for good. Stepping off the end
-            // of main lands in libc, which has no source and no debug info, and
-            // exec-next fails there — so this used to run on until the step
-            // failed and the whole trace got reported as truncated, when in fact
-            // every line of the user's program had been captured.
-            //
-            // Safe because the loop steps with exec-next, which steps OVER
-            // calls: a stop can only lack a source file once main has returned.
-            // Revisit if this ever moves to exec-step.
-            if (!stop.file && snapshots.length > 0) break;
-
-            if (Date.now() > deadline) {
-                console.warn(`  [GDB] session budget of ${SESSION_BUDGET_MS}ms exhausted after ${steps} steps`);
-                timedOut = true;
-                break;
-            }
-
-            // Skip CRT/runtime frames — only collect snapshots inside user source
-            if (stop.file && userSrcFile && stop.file !== userSrcFile) {
-                const nextStop = await driver.next();
-                if (!nextStop) { timedOut = true; break; }
-                stop = nextStop;
-                steps++;
-                continue;
-            }
-
-            // Capture local variables at this line
-            const locals = await driver.getLocals();
-
-            // BFS traversal of the pointer graph starting from local pointer variables.
-            // This discovers nodes reachable only via struct fields (e.g. head->next->next)
-            // in addition to nodes directly pointed to by locals.
-            const structData = new Map<string, GDBField[]>();
-            {
-                const visited = new Set<string>();
-                const bfsQueue: Array<{ expr: string; addr: string }> = [];
-                const MAX_NODES = 50;
-
-                for (const local of locals) {
-                    if (isPointerType(local.type) && !isNullPointer(local.value) && !visited.has(local.value)) {
-                        bfsQueue.push({ expr: local.name, addr: local.value });
-                    }
-                }
-
-                while (bfsQueue.length > 0 && visited.size < MAX_NODES) {
-                    const item = bfsQueue.shift()!;
-                    if (visited.has(item.addr)) continue;
-                    visited.add(item.addr);
-
-                    const fields = await driver.inspectPointer(item.expr);
-                    if (fields.length === 0) continue;
-                    structData.set(item.addr, fields);
-
-                    for (const f of fields) {
-                        if (isPointerType(f.type) && !isNullPointer(f.value) && !visited.has(f.value)) {
-                            bfsQueue.push({ expr: `${item.expr}->${f.name}`, addr: f.value });
-                        }
-                    }
-                }
-            }
-
-            // Detect STL containers (std::stack / queue / priority_queue / vector / deque)
-            // by evaluating .size() and the most-recently-pushed element.
-            const stlContainers = new Map<string, STLSnapshot>();
-            for (const local of locals) {
-                if (isPointerType(local.type)) continue;
-                const kind = detectSTL(local.type);
-                if (!kind) continue;
-
-                const sizeStr = await driver.evaluateExpression(`${local.name}.size()`);
-                const size = parseInt(sizeStr);
-                if (isNaN(size) || size < 0) continue;
-
-                let pushValue: string | undefined;
-                let entries: { key: string; value: string }[] | undefined;
-
-                if (kind === 'unordered_map' || kind === 'map') {
-                    // Map containers — enumerate entries via pretty printer.
-                    if (size > 0) {
-                        entries = await driver.enumerateMapEntries(local.name);
-                    } else {
-                        entries = [];
-                    }
-                } else if (size > 0) {
-                    if (kind === 'stack' || kind === 'priority_queue') {
-                        pushValue = await driver.evaluateExpression(`${local.name}.top()`);
-                    } else if (kind === 'queue') {
-                        // back() reflects the most recently enqueued element.
-                        pushValue = await driver.evaluateExpression(`${local.name}.back()`);
-                    } else {
-                        // vector / deque
-                        pushValue = await driver.evaluateExpression(`${local.name}.back()`);
-                    }
-                    if (pushValue === '') pushValue = undefined;
-                }
-                stlContainers.set(local.name, { kind, size, pushValue, entries });
-            }
-
-            // Inspect stack-allocated struct locals (array-based Stack/Queue)
-            const valueStructData = new Map<string, GDBField[]>();
-            const arrayReadings   = new Map<string, string>();
-            for (const local of locals) {
-                if (isPointerType(local.type)) continue;
-                // Skip STL containers — we already handled them above.
-                if (detectSTL(local.type)) continue;
-                if (!isStructType(local.type))  continue;
-                const fields = await driver.inspectValueStruct(local.name);
-                if (fields.length === 0) continue;
-                valueStructData.set(local.name, fields);
-
-                // For each pair of (array field, integer field), read the element
-                // at index [curr] and [curr-1] so gdbMapper can detect push/pop.
-                const arrFields = fields.filter(f => f.type.includes('['));
-                const idxFields = fields.filter(f => isIntegralType(f.type));
-                for (const arr of arrFields) {
-                    for (const idx of idxFields) {
-                        const iv = parseInt(idx.value);
-                        if (isNaN(iv)) continue;
-                        for (const ri of [iv, iv - 1].filter(i => i >= 0)) {
-                            const key = `${local.name}.${arr.name}[${ri}]`;
-                            const val = await driver.evaluateExpression(
-                                `${local.name}.${arr.name}[${ri}]`
-                            );
-                            if (val) arrayReadings.set(key, val);
-                        }
-                    }
-                }
-            }
-
-            const callStack = await driver.getCallStack();
-            snapshots.push({ line: stop.line, func: stop.func, locals, structData, valueStructData, arrayReadings, stlContainers, callStack });
-
-            // next() returns null only when the step failed — it swallows its own
-            // 6s stop timeout. A program that simply ended produces a *stopped
-            // with a terminal reason instead, and breaks at the top of the loop.
-            // So this branch means GDB stopped responding, and the trace is a
-            // prefix. It used to break with timedOut still false, which sent a
-            // truncated trace back as HTTP 200 success, indistinguishable from a
-            // program that ran to completion.
-            const nextStop = await driver.next();
-            if (!nextStop) { timedOut = true; break; }
-            stop = nextStop;
-            steps++;
-        }
-
-        if (steps >= MAX_STEPS) timedOut = true;
-
-        // The loop can end with the program still running — stepping off the end
-        // of main, the step budget, a failed step. Let it finish before tearing
-        // GDB down, or its buffered stdout dies with it and programOutput below
-        // reads an empty file.
-        if (!isTerminalReason(stop.reason)) {
-            await driver.finishInferior();
-        }
-
-        await driver.quit();
-
-        // The redirect file lives in /dev/shm (RAM-backed) on Linux, so a program
-        // printing in a tight loop can fill memory. Read at most MAX_OUTPUT_BYTES.
-        let programOutput = '';
-        try {
-            const { size } = await stat(stdoutFile);
-            const handle = await open(stdoutFile, 'r');
-            try {
-                const length = Math.min(size, MAX_OUTPUT_BYTES);
-                const buf = Buffer.alloc(length);
-                await handle.read(buf, 0, length, 0);
-                programOutput = buf.toString('utf-8');
-                if (size > MAX_OUTPUT_BYTES) {
-                    programOutput += `\n[output truncated at ${MAX_OUTPUT_BYTES} bytes]`;
-                }
-            } finally {
-                await handle.close();
-            }
-        } catch { /* no output */ }
-
-        return { snapshots, programOutput, timedOut, aborted };
-
-    } catch (err) {
-        await driver.quit().catch(() => {});
-        return {
-            snapshots: [],
-            programOutput: '',
-            timedOut: false,
-            error: err instanceof Error ? err.message : 'GDB session failed',
-        };
-    } finally {
-        await delay(200); // let GDB release file handles before deleting
-        await rm(stdinFile, { force: true }).catch(() => {});
-        await rm(stdoutFile, { force: true }).catch(() => {});
     }
 }

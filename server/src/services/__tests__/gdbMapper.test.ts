@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { snapshotsToTraceSteps } from '../gdbMapper.js';
-import type { GDBSnapshot, STLSnapshot, STLKind } from '../gdbDriver.js';
+import type { GDBSnapshot, STLSnapshot, STLKind } from '../gdbTypes.js';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
