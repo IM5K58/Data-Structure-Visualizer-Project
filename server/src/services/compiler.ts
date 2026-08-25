@@ -95,6 +95,38 @@ function rlimitFlags(): string[] {
     ];
 }
 
+/** How long the debug build gets before it is killed. */
+const COMPILE_TIMEOUT_MS = intFromEnv('COMPILE_TIMEOUT_MS', 15_000);
+
+/**
+ * Explain a compiler that produced no output at all.
+ *
+ * `success: false` with an empty stderr reaches the client as a compile error
+ * with no message, which is a dead end — it looks like the user's code is at
+ * fault when the compiler never actually ran. This turns the exit status back
+ * into something a person can act on.
+ */
+function describeSilentFailure(
+    result: { code: number; signal: string | null },
+    cmd: string,
+    args: string[],
+): string {
+    const invocation = `${cmd} ${args.join(' ')}`;
+    if (result.signal === 'SIGKILL' || result.signal === 'SIGTERM') {
+        return `The compiler was killed after ${COMPILE_TIMEOUT_MS}ms without producing any output.\n`
+            + `This is a timeout, not a compile error. Raise COMPILE_TIMEOUT_MS if the host is slow, `
+            + `or check that the resource limits leave the compiler enough room `
+            + `(RLIMIT_AS_BYTES, RLIMIT_NPROC, RLIMIT_CPU_SEC).\n`
+            + `Invocation: ${invocation}`;
+    }
+    if (result.signal) {
+        return `The compiler was terminated by ${result.signal} without producing any output.\n`
+            + `Invocation: ${invocation}`;
+    }
+    return `The compiler exited with status ${result.code} and produced no output.\n`
+        + `Invocation: ${invocation}`;
+}
+
 // Probed once at startup. See tempBase.ts for why this is not just '/dev/shm'.
 const TEMP_BASE = (() => {
     let mounts: string | null = null;
@@ -130,13 +162,24 @@ export async function compileWithDebug(code: string): Promise<CompileWithDebugRe
         GPP_PATH,
         [srcFile, '-o', outFile, '-g', '-O0', '-std=c++17', '-pipe'],
     );
-    const result = await runProcess(cmd, args, jobDir, 15000);
+    const started = Date.now();
+    const result = await runProcess(cmd, args, jobDir, COMPILE_TIMEOUT_MS);
+    if (result.code !== 0) {
+        console.warn(
+            `  [compile] failed after ${Date.now() - started}ms `
+            + `code=${result.code} signal=${result.signal} stderrBytes=${result.stderr.length}`,
+        );
+        console.warn(`  [compile] ${cmd} ${args.join(' ')}`);
+    }
 
     return {
         success: result.code === 0,
         binaryPath: outFile,
         jobDir,
-        stderr: result.stderr,
+        // A compiler that dies without writing anything used to surface as an
+        // empty error, which is undiagnosable from the client — it looks like a
+        // compile error with no message. Say what actually happened instead.
+        stderr: result.stderr || describeSilentFailure(result, cmd, args),
     };
 }
 
