@@ -17,11 +17,37 @@ services:
       # when not behind a proxy — a permissive value lets clients spoof
       # X-Forwarded-For and bypass the rate limiter.
       TRUST_PROXY: ${TRUST_PROXY:-}
+      #
+      # Resource caps on the traced program. Defaults shown; all are optional.
+      # These must be PLAIN INTEGERS — the server validates them at startup and
+      # refuses to boot on anything else, so "256M" gives you a crash loop, not a
+      # 256 MiB limit. Write the byte count out.
+      # RLIMIT_CPU_SEC: "8"
+      # RLIMIT_AS_BYTES: "268435456"      # 256 MiB
+      # RLIMIT_STACK_BYTES: "16777216"    # 16 MiB
+      # RLIMIT_FSIZE_BYTES: "8388608"     # 8 MiB
+      # RLIMIT_NOFILE: "64"
+      # RLIMIT_NPROC: "64"
+      #
+      # DISABLE_RLIMIT=true starts the server with NONE of the above. It is the
+      # deliberate escape hatch for a host that is already constrained; here it
+      # would hand arbitrary user C++ an uncapped container.
+      # DISABLE_RLIMIT: "true"
     read_only: true
     tmpfs:
       # exec is required: compiled user binaries are written here and run.
-      - /tmp:exec,mode=1777,size=256m
-      - /dev/shm:exec,mode=1777,size=256m
+      # Docker mounts /dev/shm noexec by default, which lets the binary be
+      # written and then refuses to run it — a failure that does not look like a
+      # mount problem from the outside.
+      #
+      # Sized well under mem_limit on purpose. tmpfs pages count against the
+      # container's memory cgroup, so 256m + 256m against a 512m limit let user
+      # code OOM-kill the container — and restart: unless-stopped turned that
+      # into a loop. At 64m the write fails with ENOSPC instead, which surfaces
+      # as a normal compile error. A job needs a source file, one binary and two
+      # redirect files, each already capped at 8 MB by RLIMIT_FSIZE_BYTES.
+      - /tmp:exec,mode=1777,size=64m
+      - /dev/shm:exec,mode=1777,size=64m
     mem_limit: 512m
     cpus: 1.0
     pids_limit: 128

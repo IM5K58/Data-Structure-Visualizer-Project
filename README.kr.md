@@ -33,18 +33,11 @@ C++ 코드  -->  g++ 컴파일  -->  GDB MI 세션  -->  라인별 스냅샷  --
 5. **런타임 패턴 분석** 엔진이 실제 포인터 그래프를 구축하고, 그래프 토폴로지(분기도, 순환, 깊이)로 자료구조를 자동 감지
 6. 프론트엔드에서 커맨드를 애니메이션으로 재생
 
-### 폴백 경로: 계측기(Instrumenter) 모드 (`USE_GDB=false` 또는 GDB 미설치 시)
+### GDB 없이 실행 (`USE_GDB=false` 또는 GDB 미설치 시)
 
-```
-C++ 코드  -->  AI 분석  -->  계측기(Instrumenter)  -->  g++ 컴파일  -->  실행  -->  트레이스 출력  -->  런타임 분석  -->  시각화
-               (Groq LLM)   (추적 함수 삽입)          (실제 바이너리)   (실행)   (__TRACE__ JSON)    (그래프 토폴로지)   (React + Framer Motion)
-               struct 힌트 제공
-```
+두 번째 추적 경로는 없습니다. 프로그램을 컴파일해 실행하고 그 출력만 돌려줍니다. `steps`는 비어 있고 시각화는 아무것도 그리지 않으며, 응답의 `notice`가 그 사실을 알립니다.
 
-1. **Groq AI** (선택 사항)가 struct 정의를 사전 분석하여 분류 힌트 제공
-2. 백엔드 **계측기**가 AI 힌트를 활용해 추적 함수를 자동 삽입 (`__vt::alloc`, `__vt::set_ptr` 등)
-3. **g++** (C++17)로 컴파일 및 실행
-4. 런타임 트레이스 출력을 단계별 커맨드로 파싱
+예전에는 사용자 소스에 추적 함수를 주입하는 계측기(instrumenter) 폴백이 있었습니다. 혼자서는 멀쩡히 컴파일되는 프로그램에 대해 **컴파일되지 않는 C++를 뱉는** 일이 있어 제거했습니다.
 
 ---
 
@@ -52,9 +45,7 @@ C++ 코드  -->  AI 분석  -->  계측기(Instrumenter)  -->  g++ 컴파일  --
 
 - **실제 C++ 실행**: g++ 백엔드를 통해 실제 C++ 코드를 컴파일하고 실행합니다. 시뮬레이션이나 의사코드 파싱이 아닙니다.
 - **GDB 기반 추적**: GDB Machine Interface(MI)로 코드를 한 줄씩 스텝하며 정확한 메모리 상태를 캡처합니다. 소스 코드 변환이 필요 없습니다.
-- **AI 보조 분류** (폴백 모드): 선택 사항인 Groq AI (무료 플랜)가 struct 정의를 사전 분석하여 비표준 필드명 등 애매한 패턴을 처리합니다.
-- **스마트 자동 감지**: 3단계 감지 시스템:
-  - **AI 분석**: Groq LLM이 계측 전 struct 타입 분류 (`GROQ_API_KEY` 설정 시, 폴백 모드 전용)
+- **스마트 자동 감지**: 2단계 감지 시스템:
   - **정적 분석**: 메서드명 (`push`/`pop` = Stack) 및 자기 타입 포인터 수 (2+ = Tree, 1 = Linked List)
   - **런타임 분석**: 실행 트레이스에서 실제 포인터 그래프를 구축하고, 그래프 속성(분기, 순환, 깊이)으로 재분류
 - **메모리 그래프 시각화**: 포인터(`->`), 할당(`new`), 해제(`delete`)를 추적하여 메모리 관계를 그래프로 표현
@@ -86,7 +77,7 @@ C++ 코드  -->  AI 분석  -->  계측기(Instrumenter)  -->  g++ 컴파일  --
 정적 힌트 (컴파일 타임)                런타임 분석 (실행 후, GDB 모드)
 push/pop 메서드   → Stack             (이미 분류됨)
 enqueue/dequeue   → Queue             (이미 분류됨)
-std::stack/vector              → Stack (계측기 + GDB 양쪽)
+std::stack/vector               → Stack
 std::queue/deque/priority_queue → Queue
                                        ┌─ 한 필드의 양방향 페어를 제거 ─┐
                                        │  (= back-edge / prev / parent) │
@@ -105,8 +96,8 @@ std::queue/deque/priority_queue → Queue
 
 **지원 값 타입**: `int`, `double`, `string`, `bool`, `char`
 
-**지원 STL 컨테이너** (GDB / 계측기 양쪽 모드):
-`std::stack`, `std::queue`, `std::priority_queue`, `std::vector`, `std::deque`. GDB 모드는 매 스냅샷마다 `.size()` / `.top()` / `.back()`을 평가해 PUSH / POP 커맨드를 합성하고, 계측기 모드는 `push`/`push_back`/`push_front`/`enqueue` 및 `pop`/`pop_back`/`pop_front`/`dequeue` 호출을 트레이스 이벤트로 재작성합니다.
+**지원 STL 컨테이너**:
+`std::stack`, `std::queue`, `std::priority_queue`, `std::vector`, `std::deque`. 매 스냅샷마다 `.size()` / `.top()` / `.back()`을 평가하고 그 차이에서 PUSH / POP 커맨드를 합성합니다.
 
 ---
 
@@ -302,12 +293,12 @@ int main() {
 
 ### 사전 준비
 
-- **Node.js** 18+
+- **Node.js** 22 (`.nvmrc`에 고정된 버전이며 CI도 이걸 씁니다)
 - **npm** 9+
 - **g++** (Windows: MSYS2, Linux/Mac: 시스템 g++)
 - **GDB** (Windows MSYS2: `pacman -S mingw-w64-ucrt-x86_64-gdb`, Linux: `apt install gdb`, Mac: `brew install gdb`)
 
-> GDB는 기본 실행 모드에 필요합니다. GDB가 설치되어 있지 않으면 서버가 자동으로 계측기(Instrumenter) 모드로 폴백합니다.
+> **GDB는 필수입니다.** 트레이스를 만드는 건 GDB뿐이라, 없으면 시각화할 것 자체가 없습니다. GDB가 없어도 서버는 프로그램을 컴파일해 실행하고 출력을 돌려주지만 `steps`는 빈 배열이고 화면에는 아무것도 그려지지 않습니다. **폴백 추적 경로는 더 이상 없습니다** — 계측기는 제거됐습니다.
 
 ### 설치 및 실행
 
@@ -326,15 +317,23 @@ npm run dev
 
 ### 환경 변수
 
+> **숫자 값은 기동 시점에 검증됩니다.** 순수한 양의 정수가 아니면(`256M`, `8s`, `-1`, `1e6`) 예외를 던지고 서버가 뜨지 않습니다. 바이트 수는 전부 풀어 쓰세요 — `RLIMIT_AS_BYTES=268435456`, `256M`은 안 됩니다. 값을 비우거나 지정하지 않으면 기본값을 씁니다. 이건 의도된 동작입니다: 예전 파서는 `256M`을 `256`으로 읽었고, 그 결과 모든 추적 대상이 주소공간 256**바이트**로 즉사한 뒤 엉뚱한 GDB 오류로 보고됐습니다.
+
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
 | `VITE_COMPILER_API_URL` | `http://localhost:3001` | 백엔드 API URL (프론트엔드) |
 | `PORT` | `3001` | 서버 포트 (백엔드) |
 | `GPP_PATH` | 자동 감지 | g++ 컴파일러 경로 |
 | `GDB_PATH` | 자동 감지 | GDB 디버거 경로 |
-| `USE_GDB` | `true` | `false`로 설정하면 계측기 모드 강제 사용 |
+| `USE_GDB` | `true` | `false`면 **추적 없이** 실행 — 출력만 나오고 `steps`는 빈 배열이라 아무것도 그려지지 않습니다 |
+| `TEMP_BASE` | 자동 탐지 | 컴파일된 바이너리를 쓰고 실행할 디렉터리. `/dev/shm`이 exec 가능하면 그걸, 아니면 OS 임시 디렉터리를 씁니다 |
 | `FRONTEND_URL` | — | 프로덕션 CORS 허용 도메인 |
-| `GROQ_API_KEY` | — | Groq AI struct 분류용 API 키 (선택, 폴백 모드 전용) |
+| `MAX_STDIN_BYTES` | `65536` | 요청당 stdin 최대 크기 |
+| `MAX_OUTPUT_BYTES` | `1048576` | 캡처하는 프로그램 출력 상한 |
+| `GDB_SESSION_BUDGET_MS` | `45000` | 추적 세션 하나의 벽시계 예산 |
+| `PISTON_URL` | — | 로컬 g++ 대신 [Piston](https://github.com/engineer-man/piston) 서버에 실행 위임. 이 경로에는 추적이 없습니다 |
+| `VERBOSE_STEP_LOG` | — | `true`면 생성된 추적 스텝을 전부 로깅 |
+| `VERBOSE_MI_LOG` | — | `true`면 GDB/MI 전 라인 출력. 매우 시끄럽고 사용자 소스와 변수 값이 로그에 남습니다 |
 | `RATE_LIMIT_COMPILE` | `20` | IP당 분당 컴파일 요청 수 |
 | `RATE_LIMIT_GENERAL` | `120` | IP당 분당 일반 `/api` 요청 수 |
 | `RATE_LIMIT_WINDOW_MS` | `60000` | 레이트 리밋 윈도(밀리초) |
@@ -345,8 +344,8 @@ npm run dev
 | `RLIMIT_FSIZE_BYTES` | `8388608` | 프로그램이 쓸 수 있는 파일 최대 크기 (8 MiB) |
 | `RLIMIT_NOFILE` | `64` | 최대 열린 파일 디스크립터 수 |
 | `RLIMIT_NPROC` | `64` | 최대 사용자 프로세스 수 |
-| `PRLIMIT_PATH` | `/usr/bin/prlimit` | `prlimit` 경로. 미존재 시 경고 후 리소스 제한 비활성화 |
-| `DISABLE_RLIMIT` | — | `true`로 설정하면 prlimit이 있어도 리소스 제한을 끔 |
+| `PRLIMIT_PATH` | `/usr/bin/prlimit` | `prlimit` 경로. 리눅스에서 없으면 서버가 **기동을 거부합니다** — `util-linux`를 설치하거나, 경로를 고치거나, `DISABLE_RLIMIT=true`로 의도적으로 우회하세요 |
+| `DISABLE_RLIMIT` | — | `true`면 사용자 코드에 **CPU·메모리·파일크기·프로세스 수 제한이 전혀 없는** 상태로 기동합니다. cgroup이나 VM으로 이미 갇힌 호스트를 위한 탈출구이고, 그 밖에서는 이 서비스를 무제한 원격 실행 엔드포인트로 만듭니다 |
 
 ---
 
@@ -358,30 +357,31 @@ npm run dev
 2. `VITE_COMPILER_API_URL`에 백엔드 URL 설정
 3. 배포
 
-### 백엔드 (Render.com - 무료, Docker)
+### 백엔드
 
-1. GitHub 레포를 [Render](https://render.com)에 연결
-2. Root directory를 `server`, Runtime을 Docker로 설정
-3. 환경변수 설정: `GPP_PATH=/usr/bin/g++`, `USE_GDB=false` (Render는 ptrace 미허용), `FRONTEND_URL=https://your-app.vercel.app`, `GROQ_API_KEY=gsk_...` (선택)
-4. 배포
+백엔드는 관리형 PaaS가 잘 내주지 않는 두 가지를 필요로 합니다.
 
-> ptrace를 제한하는 클라우드 환경(예: Render 무료 플랜)에서는 `USE_GDB=false`로 설정하여 계측기 모드를 사용하세요.
+1. **ptrace.** 트레이스를 만드는 건 GDB뿐입니다.
+2. **exec 가능한 임시 디렉터리.** 컴파일된 바이너리를 쓰고 나서 실행해야 하는데, Docker는 `/dev/shm`을 기본적으로 `noexec`로 마운트합니다. 그러면 쓰기는 성공하고 실행에서 막힙니다. 서버가 기동 시 이걸 탐지해 OS 임시 디렉터리로 물러나며, `TEMP_BASE`로 직접 지정할 수도 있습니다.
 
-### 보안 강화 (공개 배포 시 필수)
+ptrace가 없으면 프로그램을 컴파일·실행해 출력만 돌려주는 서버가 됩니다. `steps`는 비어 있고 화면에는 아무것도 안 그려집니다. 시각화 도구가 아니라 실행기입니다. **계측기 폴백은 더 이상 없습니다** — 어떤 플랫폼이 ptrace를 막는다면 답은 다른 설정이 아니라 다른 플랫폼입니다.
 
-서버는 HTTP로 전송된 임의의 C++ 코드를 컴파일/실행합니다. 내장된 리소스 리밋(`prlimit`)과 컨테이너 격리 옵션을 함께 적용하세요:
+이 저장소에는 `render.yaml`도 `Procfile`도 없습니다. 대시보드로 설정하는 PaaS에 배포하면 빌드 명령·시작 명령·환경변수가 전부 버전 관리 밖에 있게 됩니다.
+
+### Docker로 직접 호스팅 (지원되는 경로)
+
+이 이미지에 필요한 플래그를 **전부** 거는 건 `server/docker-compose.yml` 하나뿐입니다. 위에서 말한 exec tmpfs 마운트를 포함해서요:
 
 ```bash
-docker run \
-  --read-only \
-  --tmpfs /tmp:exec --tmpfs /dev/shm:exec \
-  --memory=512m --cpus=1 --pids-limit=128 \
-  --security-opt=no-new-privileges \
-  --security-opt seccomp=server/seccomp-profile.json \
-  -p 3001:3001 server-image
+cd server
+docker compose up compiler
 ```
 
-보수적인 seccomp 프로파일이 `server/seccomp-profile.json`에 포함되어 있습니다. Express 서버 자체도 `/api/compile`에 레이트 리밋(기본 20 req/min/IP)을 적용하며, 위 표의 `RATE_LIMIT_*` 환경변수로 조정할 수 있습니다.
+`read_only`, `no-new-privileges`, 번들된 seccomp 프로파일, `mem_limit`, `cpus`, `pids_limit`을 적용하고 `/tmp`과 `/dev/shm`을 exec 가능한 tmpfs로 마운트합니다. 외부에 노출하기 전에 `FRONTEND_URL`을 프론트엔드 오리진으로 설정하세요. 동등한 `docker run` 형태는 `server/Dockerfile` 끝 주석에 있습니다 — 거기 seccomp 경로는 **호스트** 경로입니다. 컨테이너가 생기기 전에 Docker CLI가 읽기 때문입니다.
+
+서버는 HTTP로 받은 임의의 C++를 컴파일·실행하므로 이 플래그들은 장식이 아니라 필수입니다. `prlimit`이 프로그램별 CPU·메모리·파일크기·프로세스 수를 막고, 컨테이너 플래그가 `prlimit`이 못 막는 것을 막습니다. `/api/compile`에는 레이트 리밋(기본 20 req/min/IP)도 걸려 있고 `RATE_LIMIT_*`로 조정합니다.
+
+**번들 프로파일의 알려진 구멍** — 나중에 발견하지 말고 지금 결정하시라고 적어둡니다. seccomp 프로파일이 `socket`/`connect`를 허용하므로 추적 대상 코드가 네트워크에 나갈 수 있습니다. 문제가 된다면 compose 서비스에 `network_mode: none`을 추가하세요. `ptrace`도 무조건 허용인데 GDB에 필요해서입니다. 다만 `kernel.yama.ptrace_scope=0`인 호스트에서는 사용자 코드가 Node 프로세스에 붙을 수도 있습니다 — 둘이 같은 uid로 돌기 때문입니다. compose의 `piston` 프로파일은 `privileged` 컨테이너를 띄우며 기본으로 꺼져 있습니다. 네트워크를 격리하기 전에는 켜지 마세요.
 
 ---
 
@@ -413,19 +413,19 @@ src/
         └── DoublyListView.tsx   # 이중 연결 리스트: forward/back 화살표
 
 server/
-├── Dockerfile                # 배포용 Docker 이미지 (Node.js + g++ + util-linux)
+├── Dockerfile                # 배포용 Docker 이미지 (Node.js + g++ + gdb + util-linux)
+├── docker-compose.yml        # 지원되는 실행 방법 — 모든 보안 플래그를 적용
 ├── seccomp-profile.json      # `--security-opt seccomp=...` 용 syscall 화이트리스트
-├── src/
-│   ├── index.ts              # Express 서버 (CORS + 레이트 리밋)
-│   ├── routes/compile.ts     # POST /api/compile 엔드포인트 (GDB 또는 계측기)
-│   └── services/
-│       ├── compiler.ts       # g++ 컴파일 + Linux용 prlimit 래퍼
-│       ├── gdbDriver.ts      # GDB MI 드라이버: 스폰/라인 스텝/스냅샷 + exec-wrapper rlimit
-│       ├── gdbMapper.ts      # GDB 스냅샷 → TraceStep[] (STL 컨테이너 포함)
-│       ├── instrumenter.ts   # C++ 코드 계측 (폴백 모드)
-│       └── codeAnalyzer.ts   # Groq AI struct 분류기 (폴백 모드, 선택)
-└── sandbox/
-    └── __tracer.h            # C++ 트레이싱 헤더 (계측기 모드에서 주입)
+└── src/
+    ├── index.ts              # Express 서버 (CORS + 레이트 리밋)
+    ├── env.ts                # 숫자 설정 엄격 파싱, 잘못된 값이면 기동 시 예외
+    ├── routes/compile.ts     # POST /api/compile 엔드포인트
+    └── services/
+        ├── compiler.ts       # g++ 컴파일 + Linux용 prlimit 래퍼
+        ├── childEnv.ts       # 환경변수 허용목록 — 사용자 코드가 서버 비밀을 못 봄
+        ├── tempBase.ts       # 컴파일된 바이너리를 실행할 exec 가능 디렉터리 선택
+        ├── gdbDriver.ts      # GDB MI 드라이버: 스폰/라인 스텝/스냅샷 + exec-wrapper rlimit
+        └── gdbMapper.ts      # GDB 스냅샷 → TraceStep[] (STL 컨테이너 포함)
 ```
 
 ---
@@ -455,7 +455,8 @@ server/
 | [CORS](https://github.com/expressjs/cors) | MIT | Cross-Origin Resource Sharing 미들웨어 |
 | [Node.js](https://nodejs.org/) | MIT | JavaScript 런타임 |
 | [tsx](https://github.com/privatenumber/tsx) | MIT | Node.js용 TypeScript 실행기 |
-| [groq-sdk](https://github.com/groq/groq-typescript) | Apache-2.0 | AI struct 분류용 Groq API 클라이언트 (선택) |
+| [express-rate-limit](https://github.com/express-rate-limit/express-rate-limit) | MIT | `/api` IP별 레이트 리밋 |
+| [dotenv](https://github.com/motdotla/dotenv) | BSD-2-Clause | `server/.env`를 환경변수로 로드 |
 
 ### 도구
 

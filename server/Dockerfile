@@ -44,15 +44,29 @@ EXPOSE 3001
 # them all; the equivalent raw invocation is:
 #
 #   docker run \
-#     --read-only --tmpfs /tmp:exec --tmpfs /dev/shm:exec \
+#     --read-only \
+#     --tmpfs /tmp:exec,mode=1777,size=256m \
+#     --tmpfs /dev/shm:exec,mode=1777,size=256m \
 #     --memory=512m --cpus=1 --pids-limit=128 \
 #     --security-opt=no-new-privileges \
-#     --security-opt seccomp=/app/seccomp-profile.json \
+#     --security-opt seccomp=./seccomp-profile.json \
 #     -p 3001:3001 server-image
 #
-# The process additionally refuses to start on Linux if prlimit is missing,
-# so per-process CPU/memory/file-size caps can never be silently dropped.
+# The seccomp path is read off the HOST by the Docker CLI before the container
+# exists, so it must be a host path — the copy at /app inside the image is never
+# read. Dropping the flag silently falls back to Docker's default profile.
+#
+# The exec flag on both tmpfs mounts is load-bearing, not tidiness: compiled user
+# binaries are written there and then run, and Docker mounts /dev/shm noexec by
+# default. Without it the binary is written successfully and cannot be executed,
+# which does not look like a mount problem from the outside. The server probes
+# for this at startup and falls back to the OS temp dir; TEMP_BASE overrides it.
+#
+# On Linux the process refuses to start if prlimit is missing, so per-process
+# CPU/memory/file-size caps cannot be dropped by accident. They CAN still be
+# dropped on purpose: DISABLE_RLIMIT=true starts the server with none of them.
 #
 # (When ptrace is denied by the platform, set USE_GDB=false: the program
-# still runs and returns its output, just without a step trace.)
+# still runs and returns its output, just without a step trace — so there is
+# nothing to visualize. There is no instrumenter fallback any more.)
 CMD ["node", "dist/index.js"]

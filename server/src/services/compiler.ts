@@ -1,10 +1,11 @@
 import { spawn } from 'child_process';
 import { writeFile, mkdir } from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { tmpdir } from 'os';
 import { childEnv } from './childEnv.js';
+import { pickTempBase } from './tempBase.js';
 import { intFromEnv } from '../env.js';
 import type { PistonExecuteResponse } from '../types/index.js';
 
@@ -94,9 +95,22 @@ function rlimitFlags(): string[] {
     ];
 }
 
-// Linux에서는 RAM 기반 /dev/shm을 사용해 디스크 I/O 절감
+// Probed once at startup. See tempBase.ts for why this is not just '/dev/shm'.
+const TEMP_BASE = (() => {
+    let mounts: string | null = null;
+    try {
+        mounts = readFileSync('/proc/mounts', 'utf-8');
+    } catch { /* not Linux, or /proc is not mounted */ }
+
+    const { base, reason } = pickTempBase(
+        process.platform, mounts, tmpdir(), process.env.TEMP_BASE,
+    );
+    console.log(`  Temp base: ${base} (${reason})`);
+    return base;
+})();
+
 function getTempBase(): string {
-    return process.platform === 'linux' ? '/dev/shm' : tmpdir();
+    return TEMP_BASE;
 }
 
 /**

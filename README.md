@@ -33,18 +33,15 @@ C++ Code  -->  g++ Compile  -->  GDB MI Session  -->  Line-by-line Snapshots  --
 5. **Runtime pattern analysis** builds a pointer graph and detects data structure types by analyzing actual graph topology (out-degree, cycles, depth)
 6. Frontend replays commands as animated visualizations
 
-### Fallback Path: Instrumenter Mode (`USE_GDB=false` or GDB not installed)
+### Without GDB (`USE_GDB=false`, or GDB not installed)
 
-```
-C++ Code  -->  AI Analysis  -->  Instrumenter  -->  g++ Compile  -->  Execute  -->  Trace Output  -->  Runtime Analysis  -->  Visualization
-               (Groq LLM)        (inject trace      (real binary)     (real run)    (__TRACE__ JSON)   (graph topology)      (React + Framer Motion)
-               struct hints       calls)
-```
+There is no second tracing path. The program is compiled, run, and its output
+returned; `steps` is empty and the visualizer draws nothing. The response
+carries a `notice` saying so.
 
-1. **Groq AI** (optional) pre-analyzes struct definitions and provides classification hints
-2. Backend **instrumenter** injects trace calls (`__vt::alloc`, `__vt::set_ptr`, etc.) using AI hints
-3. Code is compiled and executed with **g++** (C++17)
-4. Runtime trace output is parsed into step-by-step commands
+An earlier version rewrote the user's source to inject trace calls. It was
+removed because it could emit C++ that would not compile — for a program that
+compiled perfectly well on its own.
 
 ---
 
@@ -52,9 +49,7 @@ C++ Code  -->  AI Analysis  -->  Instrumenter  -->  g++ Compile  -->  Execute  -
 
 - **Real C++ Execution**: Compiles and runs actual C++ code via g++ backend. No simulation or pseudo-code parsing.
 - **GDB-Powered Tracing**: Uses GDB Machine Interface (MI) to step through code line by line and capture exact memory state — no source code transformation needed.
-- **AI-Assisted Classification** (fallback mode): Optional Groq AI (free tier) pre-analyzes struct definitions to handle ambiguous field names and non-standard patterns.
-- **Smart Auto-Detection**: Three-layer detection system:
-  - **AI analysis**: Groq LLM classifies struct types before instrumentation (if `GROQ_API_KEY` is set, fallback mode only)
+- **Smart Auto-Detection**: Two-layer detection system:
   - **Static analysis**: Method names (`push`/`pop` = Stack) and self-type pointer counts (2+ = Tree, 1 = Linked List)
   - **Runtime analysis**: Builds actual pointer graph from execution traces and reclassifies based on graph topology (branching, cycles, depth)
 - **Memory Graph Visualization**: Traces pointers (`->`), allocations (`new`), and deallocations (`delete`) to draw memory relationships.
@@ -83,10 +78,10 @@ C++ Code  -->  AI Analysis  -->  Instrumenter  -->  g++ Compile  -->  Execute  -
 ### Smart Detection Pipeline
 
 ```
-Static Hint (compile-time)            Runtime Analysis (post-execution, GDB mode)
+Static Hint (compile-time)            Runtime Analysis (post-execution)
 push/pop methods → Stack              (already classified)
 enqueue/dequeue  → Queue              (already classified)
-std::stack/vector              → Stack (instrumenter + GDB modes)
+std::stack/vector               → Stack
 std::queue/deque/priority_queue → Queue
                                       ┌─ strip bidirectional pairs from one field ─┐
                                       │  (the "back-edge" / prev / parent field)   │
@@ -105,12 +100,10 @@ std::queue/deque/priority_queue → Queue
 
 **Supported Value Types**: `int`, `double`, `string`, `bool`, `char`
 
-**Supported STL Containers** (both GDB and instrumenter modes):
+**Supported STL Containers**:
 `std::stack`, `std::queue`, `std::priority_queue`, `std::vector`, `std::deque`. The
-GDB-mode tracer evaluates `.size()` / `.top()` / `.back()` per snapshot and
-synthesises PUSH / POP commands; the instrumenter mode rewrites
-`push`/`push_back`/`push_front`/`enqueue` and `pop`/`pop_back`/`pop_front`/`dequeue`
-calls into trace events.
+tracer evaluates `.size()` / `.top()` / `.back()` per snapshot and synthesises
+PUSH / POP commands from the differences.
 
 ---
 
@@ -306,12 +299,16 @@ int main() {
 
 ### Prerequisites
 
-- **Node.js** 18+
+- **Node.js** 22 (the version in `.nvmrc`, which CI also uses)
 - **npm** 9+
 - **g++** (MSYS2 on Windows, or system g++ on Linux/Mac)
 - **GDB** (MSYS2 on Windows: `pacman -S mingw-w64-ucrt-x86_64-gdb`, Linux/Mac: `apt install gdb` / `brew install gdb`)
 
-> GDB is required for the default execution mode. If GDB is not installed, the server automatically falls back to instrumenter mode.
+> **GDB is required.** It is the only thing that produces a trace, so without it
+> there is nothing to visualize. If GDB is missing the server still compiles and
+> runs the program and returns its output, but `steps` comes back empty and the
+> visualizer draws nothing. There is no longer a second tracing path to fall back
+> to — the instrumenter was removed.
 
 ### Installation & Setup
 
@@ -328,7 +325,27 @@ npm run dev
 
 Open `http://localhost:5173` in your browser.
 
+### Tests
+
+```bash
+npm run test:all    # frontend and server suites
+npm run typecheck   # both TypeScript projects
+npm run lint        # covers server/src as well
+```
+
+`npm test` on its own runs only the frontend suite — the root vitest config is
+scoped to `src/**`. Use `test:all` for both. CI
+(`.github/workflows/ci.yml`) runs lint, typecheck, both suites and both builds
+on Node 22.
+
 ### Environment Variables
+
+> **Numeric values are validated at startup.** Anything that is not a plain
+> positive whole number — `256M`, `8s`, `-1`, `1e6` — throws and the server does
+> not start. Write byte counts out in full: `RLIMIT_AS_BYTES=268435456`, never
+> `256M`. Unset or empty uses the default. This is deliberate: the old parser
+> read `256M` as `256`, which gave every traced program a 256-byte address space
+> and reported it as an unrelated GDB failure.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -336,9 +353,15 @@ Open `http://localhost:5173` in your browser.
 | `PORT` | `3001` | Server port (backend) |
 | `GPP_PATH` | Auto-detected | Path to g++ compiler |
 | `GDB_PATH` | Auto-detected | Path to GDB debugger |
-| `USE_GDB` | `true` | Set to `false` to force instrumenter mode |
+| `USE_GDB` | `true` | Set to `false` to run programs **without a trace** — output only, `steps` is empty and nothing is visualized |
+| `TEMP_BASE` | Probed | Directory that compiled binaries are written to and run from. Defaults to `/dev/shm` when it is exec-capable, otherwise the OS temp dir. Set explicitly if neither works |
 | `FRONTEND_URL` | — | Allowed CORS origin for production |
-| `GROQ_API_KEY` | — | Groq API key for AI struct classification (optional, fallback mode only) |
+| `MAX_STDIN_BYTES` | `65536` | Largest stdin payload accepted per request |
+| `MAX_OUTPUT_BYTES` | `1048576` | Cap on captured program output |
+| `GDB_SESSION_BUDGET_MS` | `45000` | Wall-clock budget for one trace session |
+| `PISTON_URL` | — | Delegate execution to a [Piston](https://github.com/engineer-man/piston) server instead of local g++. No tracing on this path |
+| `VERBOSE_STEP_LOG` | — | `true` logs every generated trace step |
+| `VERBOSE_MI_LOG` | — | `true` echoes every GDB/MI line. Very noisy, and it prints user source and variable values |
 | `RATE_LIMIT_COMPILE` | `20` | Compile requests per minute per IP |
 | `RATE_LIMIT_GENERAL` | `120` | Other `/api` requests per minute per IP |
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Rate-limit window in milliseconds |
@@ -349,8 +372,8 @@ Open `http://localhost:5173` in your browser.
 | `RLIMIT_FSIZE_BYTES` | `8388608` | Max file size a program may write (8 MiB) |
 | `RLIMIT_NOFILE` | `64` | Max open file descriptors |
 | `RLIMIT_NPROC` | `64` | Max user processes |
-| `PRLIMIT_PATH` | `/usr/bin/prlimit` | Path to `prlimit`. If missing, resource limits are skipped with a warning |
-| `DISABLE_RLIMIT` | — | Set to `true` to skip resource limiting even when `prlimit` exists |
+| `PRLIMIT_PATH` | `/usr/bin/prlimit` | Path to `prlimit`. On Linux the server **refuses to start** if it is missing — install `util-linux`, correct this path, or set `DISABLE_RLIMIT=true` deliberately |
+| `DISABLE_RLIMIT` | — | `true` starts the server with **no CPU, memory, file-size or process caps** on user code. This is the documented escape hatch for a host that is already constrained (cgroups, a VM); anywhere else it turns this service into an unbounded remote-execution endpoint |
 
 ---
 
@@ -362,33 +385,57 @@ Open `http://localhost:5173` in your browser.
 2. Set `VITE_COMPILER_API_URL` to your backend URL
 3. Deploy
 
-### Backend (Render.com - Free, Docker)
+### Backend
 
-1. Connect GitHub repo to [Render](https://render.com)
-2. Set root directory to `server`, runtime to Docker
-3. Set env vars: `GPP_PATH=/usr/bin/g++`, `USE_GDB=false` (Render does not allow ptrace), `FRONTEND_URL=https://your-app.vercel.app`, `GROQ_API_KEY=gsk_...` (optional)
-4. Deploy
+The backend needs two things a managed PaaS often will not give you:
 
-> On cloud platforms that restrict ptrace (e.g. Render free tier), set `USE_GDB=false` to use instrumenter mode.
+1. **ptrace**, because GDB is the only thing that produces a trace.
+2. **An exec-capable temp directory.** Compiled binaries are written and then
+   run. Docker mounts `/dev/shm` `noexec` by default, so the binary is written
+   successfully and then refuses to execute. The server probes for this at
+   startup and falls back to the OS temp dir; `TEMP_BASE` overrides it outright.
 
-### Hardening (recommended for any public deployment)
+Without ptrace you get a backend that compiles and runs the submitted program
+and returns its output, with `steps` empty and nothing drawn. That is a
+run-only service, not a visualizer. **There is no instrumenter fallback any
+more** — if a platform denies ptrace, the answer is a different platform, not a
+different setting.
 
-The server compiles and runs arbitrary C++ submitted over HTTP. Always combine
-the built-in resource limits (`prlimit`) with container-level isolation:
+The repo has no `render.yaml` or `Procfile`; anything deployed to a dashboard-
+configured PaaS has its build command, start command and env vars living
+outside version control.
+
+### Self-hosting with Docker (the supported path)
+
+`server/docker-compose.yml` is the only invocation that sets every flag this
+image needs — the `exec` tmpfs mounts above included:
 
 ```bash
-docker run \
-  --read-only \
-  --tmpfs /tmp:exec --tmpfs /dev/shm:exec \
-  --memory=512m --cpus=1 --pids-limit=128 \
-  --security-opt=no-new-privileges \
-  --security-opt seccomp=server/seccomp-profile.json \
-  -p 3001:3001 server-image
+cd server
+docker compose up compiler
 ```
 
-A conservative seccomp profile is included at `server/seccomp-profile.json`. The
-Express server also rate-limits `/api/compile` (default 20 req/min/IP); tune via
-the `RATE_LIMIT_*` env vars above.
+It applies `read_only`, `no-new-privileges`, the bundled seccomp profile,
+`mem_limit`, `cpus` and `pids_limit`, and mounts `/tmp` and `/dev/shm` as
+exec-capable tmpfs. Set `FRONTEND_URL` to your frontend origin before exposing
+it. The equivalent raw `docker run` is in the comment at the end of
+`server/Dockerfile` — note the seccomp path there is a **host** path, resolved
+by the Docker CLI before the container exists.
+
+The server compiles and runs arbitrary C++ submitted over HTTP, so these flags
+are load-bearing rather than decorative. `prlimit` caps each program's CPU,
+memory, file size and process count; the container flags bound everything
+`prlimit` cannot. `/api/compile` is additionally rate-limited (20 req/min/IP by
+default); tune with the `RATE_LIMIT_*` vars above.
+
+**Known gaps in the bundled profile**, so you can decide rather than discover:
+the seccomp profile permits `socket`/`connect`, so traced code can reach the
+network — add `network_mode: none` to the compose service if that matters. It
+also permits `ptrace` unconditionally, which GDB needs; on a host with
+`kernel.yama.ptrace_scope=0` that also lets user code attach to the Node process,
+since both run as the same uid. The `piston` profile in the compose file starts a
+`privileged` container and is off by default; leave it off unless you have
+isolated its network.
 
 ---
 
@@ -420,19 +467,19 @@ src/
         └── DoublyListView.tsx   # Doubly Linked List: forward/back arrows
 
 server/
-├── Dockerfile                # Docker image for deployment (Node.js + g++ + util-linux)
+├── Dockerfile                # Docker image for deployment (Node.js + g++ + gdb + util-linux)
+├── docker-compose.yml        # The supported invocation — applies every hardening flag
 ├── seccomp-profile.json      # Conservative syscall whitelist for `--security-opt seccomp=...`
-├── src/
-│   ├── index.ts              # Express server with CORS + rate-limit
-│   ├── routes/compile.ts     # POST /api/compile endpoint (GDB or instrumenter)
-│   └── services/
-│       ├── compiler.ts       # g++ compilation + prlimit wrapper (Linux)
-│       ├── gdbDriver.ts      # GDB MI driver: spawns GDB, steps line-by-line, captures snapshots, exec-wrapper rlimit
-│       ├── gdbMapper.ts      # Converts GDB snapshots → TraceStep[] events (incl. STL containers)
-│       ├── instrumenter.ts   # C++ code instrumentation (fallback mode)
-│       └── codeAnalyzer.ts   # Groq AI struct classifier (fallback mode, optional)
-└── sandbox/
-    └── __tracer.h            # C++ tracing header (injected in instrumenter mode)
+└── src/
+    ├── index.ts              # Express server with CORS + rate-limit
+    ├── env.ts                # Strict parsing of numeric settings; throws at startup on a bad value
+    ├── routes/compile.ts     # POST /api/compile endpoint
+    └── services/
+        ├── compiler.ts       # g++ compilation + prlimit wrapper (Linux)
+        ├── childEnv.ts       # Env allowlist — user code never sees the server's own variables
+        ├── tempBase.ts       # Picks an exec-capable directory for compiled binaries
+        ├── gdbDriver.ts      # GDB MI driver: spawns GDB, steps line-by-line, captures snapshots, exec-wrapper rlimit
+        └── gdbMapper.ts      # Converts GDB snapshots → TraceStep[] events (incl. STL containers)
 ```
 
 ---
@@ -462,7 +509,8 @@ This project is built with the following open-source libraries:
 | [CORS](https://github.com/expressjs/cors) | MIT | Cross-Origin Resource Sharing middleware |
 | [Node.js](https://nodejs.org/) | MIT | JavaScript runtime |
 | [tsx](https://github.com/privatenumber/tsx) | MIT | TypeScript execution for Node.js |
-| [groq-sdk](https://github.com/groq/groq-typescript) | Apache-2.0 | Groq API client for AI struct classification (optional) |
+| [express-rate-limit](https://github.com/express-rate-limit/express-rate-limit) | MIT | Per-IP rate limiting for `/api` |
+| [dotenv](https://github.com/motdotla/dotenv) | BSD-2-Clause | Loads `server/.env` into the environment |
 
 ### Toolchain
 

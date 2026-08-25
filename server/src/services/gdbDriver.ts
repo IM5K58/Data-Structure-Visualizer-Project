@@ -521,6 +521,28 @@ export class GDBDriver {
         return stopPromise;
     }
 
+    /**
+     * Let the program finish on its own, so its output actually gets written.
+     *
+     * The stepping loop can end with the inferior still alive. On Linux stepping
+     * past the end of main lands in libc, which has no debug info, and exec-next
+     * fails there with "Cannot find bounds of current function" — measured
+     * inside the deployment container. Tearing the session down at that point
+     * kills the program mid-flight, and `printf` to a redirected file is fully
+     * buffered: it only flushes at exit. So the captured output came back empty
+     * even though the program had produced all of it.
+     *
+     * Bounded, because "finish on its own" is not guaranteed — a program blocked
+     * on input never will. quit() kills it in that case, same as before.
+     */
+    async finishInferior(ms = 3000): Promise<void> {
+        try {
+            const stopped = this.waitStop(ms);
+            await this.sendMI('exec-continue').catch(() => {});
+            await stopped;
+        } catch { /* did not finish in time; teardown handles it */ }
+    }
+
     async next(): Promise<GDBStopInfo | null> {
         try {
             const stopPromise = this.waitStop(6000);
@@ -867,6 +889,18 @@ export async function runGDBSession(
 
         while (steps < MAX_STEPS) {
             if (isTerminalReason(stop.reason)) break;
+
+            // Execution has left the user's code for good. Stepping off the end
+            // of main lands in libc, which has no source and no debug info, and
+            // exec-next fails there — so this used to run on until the step
+            // failed and the whole trace got reported as truncated, when in fact
+            // every line of the user's program had been captured.
+            //
+            // Safe because the loop steps with exec-next, which steps OVER
+            // calls: a stop can only lack a source file once main has returned.
+            // Revisit if this ever moves to exec-step.
+            if (!stop.file && snapshots.length > 0) break;
+
             if (Date.now() > deadline) {
                 console.warn(`  [GDB] session budget of ${SESSION_BUDGET_MS}ms exhausted after ${steps} steps`);
                 timedOut = true;
@@ -1002,6 +1036,14 @@ export async function runGDBSession(
         }
 
         if (steps >= MAX_STEPS) timedOut = true;
+
+        // The loop can end with the program still running — stepping off the end
+        // of main, the step budget, a failed step. Let it finish before tearing
+        // GDB down, or its buffered stdout dies with it and programOutput below
+        // reads an empty file.
+        if (!isTerminalReason(stop.reason)) {
+            await driver.finishInferior();
+        }
 
         await driver.quit();
 
