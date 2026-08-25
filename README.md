@@ -359,6 +359,10 @@ on Node 22.
 | `MAX_STDIN_BYTES` | `65536` | Largest stdin payload accepted per request |
 | `MAX_OUTPUT_BYTES` | `1048576` | Cap on captured program output |
 | `GDB_SESSION_BUDGET_MS` | `45000` | Wall-clock budget for one trace session |
+| `COMPILE_TIMEOUT_MS` | `15000` | How long the debug build gets before it is killed |
+| `MAX_CONCURRENT_JOBS` | `2` | Compile+trace jobs running at once. Each is a compiler, a GDB and the traced program |
+| `MAX_QUEUED_JOBS` | `8` | Jobs allowed to wait for a slot. Past this a request is refused with 503 rather than joining a pile that will time out |
+| `QUEUE_WAIT_MS` | `20000` | How long a queued job waits before giving up |
 | `PISTON_URL` | — | Delegate execution to a [Piston](https://github.com/engineer-man/piston) server instead of local g++. No tracing on this path |
 | `VERBOSE_STEP_LOG` | — | `true` logs every generated trace step |
 | `VERBOSE_MI_LOG` | — | `true` echoes every GDB/MI line. Very noisy, and it prints user source and variable values |

@@ -4,12 +4,24 @@ import { executeCode, compileWithDebug } from '../services/compiler.js';
 import { runGDBSession } from '../services/gdbDriver.js';
 import { snapshotsToTraceSteps } from '../services/gdbMapper.js';
 import { intFromEnv } from '../env.js';
+import { Slots } from '../slots.js';
 import type { CompileResponse, CompileRequest } from '../types/index.js';
 
 const router = Router();
 
 const USE_GDB = process.env.USE_GDB !== 'false'; // default: true
 const MAX_STDIN_BYTES = intFromEnv('MAX_STDIN_BYTES', 64 * 1024);
+
+/**
+ * Concurrency ceiling for compile+trace jobs. Two at a time by default: each
+ * one is a compiler, a GDB and a traced program, and the container this ships
+ * in is sized at 512 MB with one CPU.
+ */
+const slots = new Slots(
+    intFromEnv('MAX_CONCURRENT_JOBS', 2),
+    intFromEnv('MAX_QUEUED_JOBS', 8),
+    intFromEnv('QUEUE_WAIT_MS', 20_000),
+);
 const VERBOSE_STEP_LOG = process.env.VERBOSE_STEP_LOG === 'true';
 
 /**
@@ -87,6 +99,7 @@ async function respondWithPlainRun(
  */
 router.post('/compile', async (req, res) => {
     const startTime = Date.now();
+    let release: (() => void) | undefined;
 
     try {
         const { code, stdin: rawStdin } = req.body as CompileRequest;
@@ -131,10 +144,41 @@ router.post('/compile', async (req, res) => {
         }
 
         // ── GDB path ─────────────────────────────────────────────────────────
+        // Everything below spawns processes, so it runs under a ceiling. The
+        // rate limiter caps requests per minute; it does nothing about how many
+        // are in flight at once, and each job is a compiler plus GDB plus the
+        // traced program.
+        try {
+            release = await slots.acquire();
+        } catch (e) {
+            const message = e instanceof Error ? e.message : 'Server is busy.';
+            console.warn(`  → refused: ${message} (in flight ${slots.inFlight}, queued ${slots.queued})`);
+            res.status(503).json({
+                success: false,
+                error: { type: 'runtime', message },
+            } as CompileResponse);
+            return;
+        }
+
+        // A client that navigates away should not leave a GDB session running to
+        // completion. It has to be `res`, not `req`: express.json() has already
+        // drained the request body by this point, so req's own 'close' has
+        // fired at 0ms for every request, disconnect or not — measured. res
+        // closes early only when the socket really went away, and writableEnded
+        // separates that from our own normal reply.
+        let clientGone = false;
+        res.on('close', () => { if (!res.writableEnded) clientGone = true; });
+
         console.log('  → Using GDB MI mode');
 
         // 1. 디버그 빌드
         const compileResult = await compileWithDebug(code);
+
+        if (clientGone) {
+            console.log('  → client disconnected during compile; dropping the job');
+            await rm(compileResult.jobDir, { recursive: true, force: true }).catch(() => {});
+            return;
+        }
         const compilationTime = Date.now() - startTime;
 
         if (!compileResult.success) {
@@ -161,7 +205,12 @@ router.post('/compile', async (req, res) => {
 
         // 2. GDB 세션 실행
         const gdbRunStart = Date.now();
-        const session = await runGDBSession(compileResult.binaryPath, stdin);
+        const session = await runGDBSession(compileResult.binaryPath, stdin, () => clientGone);
+
+        if (session.aborted) {
+            console.log('  → client disconnected mid-trace; dropping the job');
+            return;
+        }
         const executionTime = Date.now() - gdbRunStart;
 
         await rm(compileResult.jobDir, { recursive: true, force: true }).catch(() => {});
@@ -225,6 +274,11 @@ router.post('/compile', async (req, res) => {
                 message: error instanceof Error ? error.message : 'Internal server error',
             },
         } as CompileResponse);
+    } finally {
+        // Every exit from the GDB path goes through here, including the early
+        // returns. A slot that is not given back is gone for the life of the
+        // process, and the ceiling ratchets down to zero.
+        release?.();
     }
 });
 

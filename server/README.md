@@ -137,6 +137,10 @@ npm run typecheck
 | `MAX_STDIN_BYTES` | `65536` | 요청당 stdin 최대 크기 |
 | `MAX_OUTPUT_BYTES` | `1048576` | 캡처하는 프로그램 출력 상한 |
 | `GDB_SESSION_BUDGET_MS` | `45000` | 추적 세션 하나의 벽시계 예산 |
+| `COMPILE_TIMEOUT_MS` | `15000` | 디버그 빌드가 강제 종료되기까지의 시간 |
+| `MAX_CONCURRENT_JOBS` | `2` | 동시에 도는 컴파일+추적 작업 수 |
+| `MAX_QUEUED_JOBS` | `8` | 슬롯 대기 가능 수. 넘으면 503 |
+| `QUEUE_WAIT_MS` | `20000` | 대기 포기까지의 시간 |
 | `PISTON_URL` | — | 로컬 g++ 대신 Piston 서버에 실행을 위임. 이 경로에는 추적이 없습니다 |
 | `RATE_LIMIT_COMPILE` | `20` | IP당 분당 컴파일 요청 수 |
 | `RATE_LIMIT_GENERAL` | `120` | IP당 분당 그 외 `/api` 요청 수 |

@@ -76,6 +76,9 @@ export interface GDBSessionResult {
     programOutput: string;
     timedOut: boolean;
     error?: string;
+    /** The caller asked to stop; whatever is here is a partial trace nobody
+     *  is waiting for. */
+    aborted?: boolean;
 }
 
 // ===== GDB MI Parser =====
@@ -156,6 +159,7 @@ class MIParser {
         this.pos++; // skip [
         const arr: unknown[] = [];
         while (this.pos < this.str.length && this.str[this.pos] !== ']') {
+            const loopStart = this.pos;
             this.skipWS();
             // Check if it's a key=value pair (e.g., "child={...}")
             const savedPos = this.pos;
@@ -169,6 +173,14 @@ class MIParser {
                 arr.push(this.parseValue());
             }
             if (this.str[this.pos] === ',') this.pos++;
+
+            // parseValue can consume nothing: a character that is not a quote, a
+            // brace, a bracket or an identifier character leaves pos exactly
+            // where it was, and this loop spins on it forever. That runs inside
+            // the stdout 'data' handler, so it takes the whole event loop with
+            // it — the server stops answering, it does not just fail a request.
+            // parseResults and parseTuple both guard this; this one did not.
+            if (this.pos === loopStart) this.pos++;
         }
         if (this.str[this.pos] === ']') this.pos++;
         return arr;
@@ -190,7 +202,13 @@ class MIParser {
     }
 }
 
-function parseMI(str: string): Record<string, unknown> {
+/**
+ * Parse an MI result payload. Exported so CI can hold the parser to its one
+ * hard requirement: it must always terminate. Its input is whatever arrives on
+ * GDB's stdout, and it runs inside the 'data' handler, so a parser that hangs
+ * hangs the server.
+ */
+export function parseMI(str: string): Record<string, unknown> {
     return new MIParser(str).parseResults();
 }
 
@@ -844,6 +862,9 @@ function isTerminalReason(reason: string): boolean {
 export async function runGDBSession(
     binaryPath: string,
     stdinContent: string,
+    /** Checked once per step. Return true to stop early — used to drop the work
+     *  when the client that asked for it has gone away. */
+    shouldAbort: () => boolean = () => false,
 ): Promise<GDBSessionResult> {
     const stdinFile = `${binaryPath}.stdin`;
     const stdoutFile = `${binaryPath}.stdout`;
@@ -853,6 +874,7 @@ export async function runGDBSession(
 
     const driver = new GDBDriver();
     let timedOut = false;
+    let aborted = false;
 
     try {
         console.log('  [GDB] starting with binary:', binaryPath);
@@ -889,6 +911,14 @@ export async function runGDBSession(
 
         while (steps < MAX_STEPS) {
             if (isTerminalReason(stop.reason)) break;
+
+            // Nobody is waiting for this any more. Stop stepping; the teardown
+            // below still runs, so GDB and the program are cleaned up properly.
+            if (shouldAbort()) {
+                console.log(`  [GDB] abandoning trace after ${steps} steps — caller gave up`);
+                aborted = true;
+                break;
+            }
 
             // Execution has left the user's code for good. Stepping off the end
             // of main lands in libc, which has no source and no debug info, and
@@ -1066,7 +1096,7 @@ export async function runGDBSession(
             }
         } catch { /* no output */ }
 
-        return { snapshots, programOutput, timedOut };
+        return { snapshots, programOutput, timedOut, aborted };
 
     } catch (err) {
         await driver.quit().catch(() => {});

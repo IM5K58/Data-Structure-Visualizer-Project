@@ -331,6 +331,10 @@ npm run dev
 | `MAX_STDIN_BYTES` | `65536` | 요청당 stdin 최대 크기 |
 | `MAX_OUTPUT_BYTES` | `1048576` | 캡처하는 프로그램 출력 상한 |
 | `GDB_SESSION_BUDGET_MS` | `45000` | 추적 세션 하나의 벽시계 예산 |
+| `COMPILE_TIMEOUT_MS` | `15000` | 디버그 빌드가 강제 종료되기까지의 시간 |
+| `MAX_CONCURRENT_JOBS` | `2` | 동시에 도는 컴파일+추적 작업 수. 각각이 컴파일러 + GDB + 추적 대상 프로그램입니다 |
+| `MAX_QUEUED_JOBS` | `8` | 슬롯을 기다릴 수 있는 작업 수. 넘으면 어차피 타임아웃 날 줄에 세우는 대신 503으로 즉시 거절합니다 |
+| `QUEUE_WAIT_MS` | `20000` | 대기 중인 작업이 포기하기까지의 시간 |
 | `PISTON_URL` | — | 로컬 g++ 대신 [Piston](https://github.com/engineer-man/piston) 서버에 실행 위임. 이 경로에는 추적이 없습니다 |
 | `VERBOSE_STEP_LOG` | — | `true`면 생성된 추적 스텝을 전부 로깅 |
 | `VERBOSE_MI_LOG` | — | `true`면 GDB/MI 전 라인 출력. 매우 시끄럽고 사용자 소스와 변수 값이 로그에 남습니다 |
