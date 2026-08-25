@@ -32,7 +32,6 @@ const RLIMIT = {
     stackBytes: intFromEnv('RLIMIT_STACK_BYTES', 16 * 1024 * 1024),
     fsizeBytes: intFromEnv('RLIMIT_FSIZE_BYTES', 8 * 1024 * 1024),
     nofile:     intFromEnv('RLIMIT_NOFILE', 64),
-    nproc:      intFromEnv('RLIMIT_NPROC', 64),
 };
 const PRLIMIT_PATH = process.env.PRLIMIT_PATH ?? '/usr/bin/prlimit';
 // Probe once at module load.
@@ -84,6 +83,26 @@ export function rlimitWrapperPrefix(): string | null {
     return [PRLIMIT_PATH, ...rlimitFlags()].join(' ');
 }
 
+/**
+ * RLIMIT_NPROC is deliberately absent.
+ *
+ * It counts processes for the real UID across the whole system, not for this
+ * container — so its headroom depends on everything else running as the same
+ * user, which a container does not control. On the deployment host that budget
+ * was already spent, and g++ could not fork its own second stage:
+ *
+ *     g++: fatal error: cannot execute '.../cc1plus':
+ *          vfork: Resource temporarily unavailable
+ *
+ * Every compile failed that way, for fifteen seconds each, on a program as
+ * small as `int main(){return 0;}`. Reproduced locally by setting
+ * RLIMIT_NPROC=2, which yields the identical message.
+ *
+ * The right tool for "this container may not exceed N processes" is the
+ * cgroup, which docker-compose.yml sets as pids_limit: 128. That is scoped to
+ * the container and cannot be exhausted by a neighbour. Deployments that do not
+ * go through compose should set an equivalent limit on the container.
+ */
 function rlimitFlags(): string[] {
     return [
         `--cpu=${RLIMIT.cpuSec}`,
@@ -91,7 +110,6 @@ function rlimitFlags(): string[] {
         `--stack=${RLIMIT.stackBytes}`,
         `--fsize=${RLIMIT.fsizeBytes}`,
         `--nofile=${RLIMIT.nofile}`,
-        `--nproc=${RLIMIT.nproc}`,
     ];
 }
 
@@ -116,7 +134,8 @@ function describeSilentFailure(
         return `The compiler was killed after ${COMPILE_TIMEOUT_MS}ms without producing any output.\n`
             + `This is a timeout, not a compile error. Raise COMPILE_TIMEOUT_MS if the host is slow, `
             + `or check that the resource limits leave the compiler enough room `
-            + `(RLIMIT_AS_BYTES, RLIMIT_NPROC, RLIMIT_CPU_SEC).\n`
+            + `(RLIMIT_AS_BYTES, RLIMIT_CPU_SEC), and that the host has process slots free — `
+            + `a compiler that cannot fork cc1plus fails exactly like this.\n`
             + `Invocation: ${invocation}`;
     }
     if (result.signal) {

@@ -27,7 +27,6 @@ services:
       # RLIMIT_STACK_BYTES: "16777216"    # 16 MiB
       # RLIMIT_FSIZE_BYTES: "8388608"     # 8 MiB
       # RLIMIT_NOFILE: "64"
-      # RLIMIT_NPROC: "64"
       #
       # DISABLE_RLIMIT=true starts the server with NONE of the above. It is the
       # deliberate escape hatch for a host that is already constrained; here it

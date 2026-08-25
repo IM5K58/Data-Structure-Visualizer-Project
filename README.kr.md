@@ -347,7 +347,7 @@ npm run dev
 | `RLIMIT_STACK_BYTES` | `16777216` | 프로그램당 스택 한도 (기본 16 MiB) |
 | `RLIMIT_FSIZE_BYTES` | `8388608` | 프로그램이 쓸 수 있는 파일 최대 크기 (8 MiB) |
 | `RLIMIT_NOFILE` | `64` | 최대 열린 파일 디스크립터 수 |
-| `RLIMIT_NPROC` | `64` | 최대 사용자 프로세스 수 |
+| ~~`RLIMIT_NPROC`~~ | — | **더 이상 쓰지 않습니다.** RLIMIT_NPROC은 컨테이너가 아니라 UID 기준으로 시스템 전역에서 세므로, 옆 프로세스가 소진하면 컴파일러가 `cc1plus`를 fork하지 못합니다. 컨테이너 단위로 거세요 — compose의 `pids_limit` 또는 `docker run --pids-limit` |
 | `PRLIMIT_PATH` | `/usr/bin/prlimit` | `prlimit` 경로. 리눅스에서 없으면 서버가 **기동을 거부합니다** — `util-linux`를 설치하거나, 경로를 고치거나, `DISABLE_RLIMIT=true`로 의도적으로 우회하세요 |
 | `DISABLE_RLIMIT` | — | `true`면 사용자 코드에 **CPU·메모리·파일크기·프로세스 수 제한이 전혀 없는** 상태로 기동합니다. cgroup이나 VM으로 이미 갇힌 호스트를 위한 탈출구이고, 그 밖에서는 이 서비스를 무제한 원격 실행 엔드포인트로 만듭니다 |
 

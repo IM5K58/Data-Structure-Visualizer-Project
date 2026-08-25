@@ -375,7 +375,7 @@ on Node 22.
 | `RLIMIT_STACK_BYTES` | `16777216` | Per-program stack cap (16 MiB default) |
 | `RLIMIT_FSIZE_BYTES` | `8388608` | Max file size a program may write (8 MiB) |
 | `RLIMIT_NOFILE` | `64` | Max open file descriptors |
-| `RLIMIT_NPROC` | `64` | Max user processes |
+| ~~`RLIMIT_NPROC`~~ | — | **No longer used.** RLIMIT_NPROC counts processes per UID system-wide, not per container, so a neighbour could exhaust it and stop the compiler forking `cc1plus`. Bound the container instead: `pids_limit` in compose, or `--pids-limit` on `docker run` |
 | `PRLIMIT_PATH` | `/usr/bin/prlimit` | Path to `prlimit`. On Linux the server **refuses to start** if it is missing — install `util-linux`, correct this path, or set `DISABLE_RLIMIT=true` deliberately |
 | `DISABLE_RLIMIT` | — | `true` starts the server with **no CPU, memory, file-size or process caps** on user code. This is the documented escape hatch for a host that is already constrained (cgroups, a VM); anywhere else it turns this service into an unbounded remote-execution endpoint |
 
