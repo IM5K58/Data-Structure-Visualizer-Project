@@ -11,7 +11,7 @@ import { rlimitWrapperPrefix } from './compiler.js';
 import { childEnv } from './childEnv.js';
 import { parseMI } from './miParser.js';
 import { stripGDBAnnotation, strOf } from './gdbValues.js';
-import type { GDBLocal, GDBField, GDBStopInfo } from './gdbTypes.js';
+import type { GDBLocal, GDBField, GDBStopInfo, GDBFrame } from './gdbTypes.js';
 
 const GDB_PATH = process.env.GDB_PATH ?? (process.platform === 'win32'
     ? 'C:\\msys64\\ucrt64\\bin\\gdb.exe'
@@ -125,6 +125,8 @@ export class GDBDriver {
     private stopResolve: ((i: GDBStopInfo) => void) | null = null;
     private stopReject: ((e: Error) => void) | null = null;
     private stopTimer: ReturnType<typeof setTimeout> | null = null;
+    /** Bumped whenever a stop wait is armed or abandoned. See cancelStopWait. */
+    private stopGeneration = 0;
 
     private readonly spawnGdb: GdbSpawner;
     private readonly startupMs: number;
@@ -245,11 +247,28 @@ export class GDBDriver {
         });
     }
 
+    /**
+     * Abandon the wait currently armed, if any.
+     *
+     * Bumping the generation is what makes this safe: a `*stopped` that arrives
+     * after the wait was cancelled belongs to a command nobody is listening for
+     * any more, and without the counter it would resolve whichever wait happened
+     * to be armed next — one execution step reported as another.
+     */
+    private cancelStopWait(): void {
+        this.stopGeneration++;
+        if (this.stopTimer) { clearTimeout(this.stopTimer); this.stopTimer = null; }
+        this.stopResolve = null;
+        this.stopReject = null;
+    }
+
     private waitStop(ms = 12000): Promise<GDBStopInfo> {
+        const generation = ++this.stopGeneration;
         const waiting = new Promise<GDBStopInfo>((resolve, reject) => {
             this.stopResolve = resolve;
             this.stopReject = reject;
             this.stopTimer = setTimeout(() => {
+                if (this.stopGeneration !== generation) return;
                 this.stopResolve = null;
                 this.stopReject = null;
                 reject(new Error('GDB stop timeout'));
@@ -331,13 +350,68 @@ export class GDBDriver {
         } catch { /* did not finish in time; teardown handles it */ }
     }
 
-    async next(): Promise<GDBStopInfo | null> {
+    /**
+     * Run an execution command and wait for the stop it causes.
+     *
+     * The point of doing this in one place is the error path. GDB reports a
+     * refused command as a *resolved* result with class 'error' — measured, and
+     * it is why an earlier `.catch(() => {})` here saw nothing. The old code
+     * then sat waiting for a stop that was never coming until the timeout, so
+     * "GDB cannot step here" cost six seconds and arrived as a timeout. Now the
+     * error cancels the wait and returns immediately.
+     */
+    private async execAndWait(cmd: string, ms: number): Promise<GDBStopInfo | null> {
+        const stopped = this.waitStop(ms);
         try {
-            const stopPromise = this.waitStop(6000);
-            await this.sendMI('exec-next').catch(() => {});
-            return await stopPromise;
+            const res = await this.sendMI(cmd);
+            if (res.class === 'error') {
+                const msg = typeof res.results.msg === 'string' ? res.results.msg : cmd;
+                if (VERBOSE_MI_LOG) console.log(`  [GDB] ${cmd} refused: ${msg}`);
+                this.cancelStopWait();
+                return null;
+            }
+        } catch {
+            // stdin gone, or the MI command timed out on its own.
+            this.cancelStopWait();
+            return null;
+        }
+        try {
+            return await stopped;
         } catch {
             return null;
+        }
+    }
+
+    /** Step over calls. */
+    async next(): Promise<GDBStopInfo | null> {
+        return this.execAndWait('exec-next', 6000);
+    }
+
+    /** Step into calls — the difference between seeing a function and not. */
+    async step(): Promise<GDBStopInfo | null> {
+        return this.execAndWait('exec-step', 6000);
+    }
+
+    /** Run to the end of the current frame and stop at the caller. */
+    async finish(): Promise<GDBStopInfo | null> {
+        return this.execAndWait('exec-finish', 8000);
+    }
+
+    /**
+     * Keep `step` out of functions whose name matches a regex.
+     *
+     * Measured on the deployment image: without this, one std::vector push_back
+     * is 160 steps of libstdc++; `skip -rfu ^std::` brings a whole BST-plus-STL
+     * program from 959 steps to 133. It is an accelerator rather than a
+     * necessity — escaping foreign frames with finish() does the heavy lifting —
+     * so a GDB that refuses the command is not an error worth failing on.
+     */
+    async addSkip(functionRegex: string): Promise<boolean> {
+        try {
+            const res = await this.sendMI(`interpreter-exec console "skip -rfu ${functionRegex}"`);
+            return res.class === 'done';
+        } catch {
+            return false;
         }
     }
 
@@ -345,24 +419,41 @@ export class GDBDriver {
      * Returns the current call stack, outermost → innermost function names.
      * For visualization (recursion / function-call hierarchy).
      */
-    async getCallStack(): Promise<string[]> {
+    /**
+     * The call stack, innermost first, with the source location of each frame.
+     *
+     * The file is the part that matters beyond display: deciding whether to keep
+     * stepping needs to know whether the user's own code is anywhere below the
+     * current frame, and asking for the depth separately costs an extra MI round
+     * trip per step for something this call already knows.
+     */
+    async getFrames(): Promise<GDBFrame[]> {
         try {
             const res = await this.sendMI('stack-list-frames');
             if (res.class !== 'done') return [];
             const stack = res.results['stack'];
             if (!Array.isArray(stack)) return [];
-            // Frames come back with `level` and `func`. GDB orders innermost first
-            // (level=0 = current), so we reverse for outermost-first.
-            const frames = (stack as unknown[])
-                .map(f => {
-                    const obj = f as Record<string, unknown>;
-                    return strOf(obj['func']) || '<unknown>';
-                })
-                .reverse();
-            return frames;
+            return (stack as unknown[]).map(f => {
+                const obj = f as Record<string, unknown>;
+                return {
+                    level: parseInt(strOf(obj['level'])) || 0,
+                    func: strOf(obj['func']) || '<unknown>',
+                    file: strOf(obj['file']),
+                    fullname: strOf(obj['fullname']),
+                    line: parseInt(strOf(obj['line'])) || 0,
+                };
+            });
         } catch {
             return [];
         }
+    }
+
+    /** Function names only, outermost first — the shape the mapper consumes. */
+    async getCallStack(): Promise<string[]> {
+        const frames = await this.getFrames();
+        // GDB orders innermost first (level 0 = current); the mapper wants the
+        // opposite, so that main is always element zero.
+        return frames.map(f => f.func).reverse();
     }
 
     async getLocals(): Promise<GDBLocal[]> {
@@ -390,7 +481,7 @@ export class GDBDriver {
     async inspectPointer(expr: string): Promise<GDBField[]> {
         const varName = `vtmp${this.token}`; // must start with a letter (GDB rejects __ prefix)
         try {
-            const createRes = await this.sendMI(`var-create ${varName} * ${expr}`);
+            const createRes = await this.sendMI(`var-create ${varName} * "${expr}"`);
             if (createRes.class !== 'done') return [];
 
             const fields = await this.listChildrenFlat(varName);
@@ -505,7 +596,7 @@ export class GDBDriver {
     async enumerateMapEntries(varName: string): Promise<{ key: string; value: string }[]> {
         const tmp = `vmap${this.token}`;
         try {
-            const created = await this.sendMI(`var-create ${tmp} * ${varName}`);
+            const created = await this.sendMI(`var-create ${tmp} * "${varName}"`);
             if (created.class !== 'done') return [];
             const numchild = parseInt(strOf(created.results['numchild'])) || 0;
             if (numchild === 0) {
@@ -556,7 +647,7 @@ export class GDBDriver {
     async inspectValueStruct(varName: string): Promise<GDBField[]> {
         const tmpName = `vstv${this.token}`;
         try {
-            const createRes = await this.sendMI(`var-create ${tmpName} * ${varName}`);
+            const createRes = await this.sendMI(`var-create ${tmpName} * "${varName}"`);
             if (createRes.class !== 'done') return [];
             const fields = await this.listValueStructFields(tmpName, varName);
             await this.sendMI(`var-delete ${tmpName}`).catch(() => {});

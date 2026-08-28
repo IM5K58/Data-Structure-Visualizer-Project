@@ -18,6 +18,16 @@ export interface GDBField {
     value: string;  // value as string
 }
 
+/** One frame of the call stack, as -stack-list-frames reports it. */
+export interface GDBFrame {
+    level: number;
+    func: string;
+    /** Source file, or '' where GDB has no source — libc, a PLT stub, the CRT. */
+    file: string;
+    fullname: string;
+    line: number;
+}
+
 export interface GDBStopInfo {
     reason: string;
     line: number;
