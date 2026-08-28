@@ -10,6 +10,18 @@ import type { CompileResponse, CompileRequest } from '../types/index.js';
 const router = Router();
 
 const USE_GDB = process.env.USE_GDB !== 'false'; // default: true
+
+/**
+ * Which commit this process was built from, reported by /api/health.
+ *
+ * Added because "is the new code actually deployed?" cost real time to answer:
+ * the only way to tell was to probe for a behaviour that only the new build
+ * has, and get it wrong twice. Render populates RENDER_GIT_COMMIT itself; other
+ * hosts can pass BUILD_COMMIT as a build arg.
+ */
+const BUILD_COMMIT = process.env.RENDER_GIT_COMMIT
+    ?? process.env.BUILD_COMMIT
+    ?? 'unknown';
 const MAX_STDIN_BYTES = intFromEnv('MAX_STDIN_BYTES', 64 * 1024);
 
 /**
@@ -290,6 +302,7 @@ router.get('/health', (_req, res) => {
         status: 'ok',
         timestamp: new Date().toISOString(),
         mode: USE_GDB ? 'gdb' : 'plain',
+        commit: BUILD_COMMIT,
     });
 });
 

@@ -31,6 +31,12 @@ ENV GDB_PATH=/usr/bin/gdb
 ENV USE_GDB=true
 ENV PRLIMIT_PATH=/usr/bin/prlimit
 
+# Which commit this image was built from, surfaced by /api/health. Render sets
+# RENDER_GIT_COMMIT by itself; elsewhere pass it in:
+#   docker build --build-arg BUILD_COMMIT=$(git rev-parse --short HEAD) .
+ARG BUILD_COMMIT=unknown
+ENV BUILD_COMMIT=$BUILD_COMMIT
+
 # Drop root inside the container — user code never needs privileges, and
 # CAP_SYS_PTRACE is not required for ptrace on the same uid.
 RUN useradd --system --create-home --shell /usr/sbin/nologin sandbox
