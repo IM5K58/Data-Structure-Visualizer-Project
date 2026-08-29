@@ -12,6 +12,14 @@ import type { STLKind } from './gdbTypes.js';
  * Strip everything after the first space to get the raw hex address.
  */
 export function stripGDBAnnotation(val: string): string {
+    // A reference prints as "@<address of the reference>: <value>", so the old
+    // split-on-space took the address of the reference itself and left a
+    // trailing colon: "@0x7ffcf60e7a90: 0x0" became "@0x7ffcf60e7a90:". That is
+    // neither an address the pointer graph can follow nor a number anything can
+    // display. What the caller wants is the referent — the part after the colon.
+    const reference = /^@0x[0-9a-fA-F]+:\s*(.*)$/.exec(val.trim());
+    if (reference) return stripGDBAnnotation(reference[1]);
+
     return val.split(' ')[0].trim();
 }
 
@@ -21,7 +29,22 @@ export function isNullPointer(val: string): boolean {
 }
 
 export function isPointerType(type: string): boolean {
-    return type.trimEnd().endsWith('*');
+    // A reference to a pointer is still a pointer for every purpose here: the
+    // motivating example is `void push_front(Node*& head, ...)`, where `head`
+    // has type "Node *&". Without this the pointer graph never starts from the
+    // one parameter the whole function is about, and every caller of this —
+    // the BFS roots, the mapper's SET_PTR detection — walks straight past it.
+    return /\*\s*&?$/.test(type.trimEnd());
+}
+
+/**
+ * True for a reference: `Node *&`, `int &`.
+ *
+ * Worth distinguishing because GDB prints their values differently — see
+ * stripGDBAnnotation.
+ */
+export function isReferenceType(type: string): boolean {
+    return type.trimEnd().endsWith('&');
 }
 
 /**

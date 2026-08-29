@@ -134,7 +134,9 @@ export async function runGDBSession(
             }
 
             // Capture local variables at this line
-            const locals = await driver.getLocals();
+            // Variables, not locals: to GDB a parameter is an argument, so the
+            // locals-only call returned nothing at all inside a function.
+            const locals = await driver.getVariables();
 
             // BFS traversal of the pointer graph starting from local pointer variables.
             // This discovers nodes reachable only via struct fields (e.g. head->next->next)

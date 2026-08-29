@@ -456,6 +456,45 @@ export class GDBDriver {
         return frames.map(f => f.func).reverse();
     }
 
+    /**
+     * Every variable visible in the current frame, arguments included.
+     *
+     * `-stack-list-locals` lives up to its name: a function's parameters are
+     * arguments, not locals, so inside
+     *
+     *     void insert(Node*& root, Node* pool, int& used, int key)
+     *
+     * it returns `locals=[]` — measured in the deployment container. Nothing at
+     * all for the frame a reader most wants to see, which means fixing the
+     * stepping alone would still have shown an empty panel.
+     *
+     * `-stack-list-variables` returns both kinds and tags parameters with
+     * arg="1". Worth keeping: an argument is where a value came from, a local is
+     * where it is going.
+     */
+    async getVariables(): Promise<GDBLocal[]> {
+        try {
+            const res = await this.sendMI('stack-list-variables 2');
+            if (res.class !== 'done') return [];
+            const variables = res.results['variables'];
+            if (!Array.isArray(variables)) return [];
+            return (variables as unknown[]).map((v) => {
+                const obj = v as Record<string, unknown>;
+                const rawValue = strOf(obj['value']);
+                return {
+                    name: strOf(obj['name']),
+                    type: strOf(obj['type']),
+                    value: stripGDBAnnotation(rawValue),
+                    rawValue,
+                    isArg: strOf(obj['arg']) === '1',
+                };
+            }).filter(v => v.name);
+        } catch {
+            return [];
+        }
+    }
+
+    /** @deprecated Cannot see function parameters. Use getVariables(). */
     async getLocals(): Promise<GDBLocal[]> {
         try {
             const res = await this.sendMI('stack-list-locals 2');

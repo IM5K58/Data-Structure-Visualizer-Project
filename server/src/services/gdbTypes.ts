@@ -10,6 +10,9 @@ export interface GDBLocal {
     type: string;
     value: string;     // stripped address (no GDB annotation)
     rawValue: string;  // original GDB value, may contain " <symbol>"
+    /** True for a function parameter. Absent on the older locals-only path,
+     *  which could not see parameters at all. */
+    isArg?: boolean;
 }
 
 export interface GDBField {
