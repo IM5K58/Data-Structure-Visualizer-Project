@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { collectSnapshots, type SteppingDriver } from '../traceSession.js';
-import type { GDBStopInfo, GDBLocal, GDBField } from '../gdbTypes.js';
+import type { GDBStopInfo, GDBLocal, GDBField, GDBFrame } from '../gdbTypes.js';
 
 /**
  * The stepping loop's control flow — the first tests it has ever had.
@@ -17,20 +17,45 @@ import type { GDBStopInfo, GDBLocal, GDBField } from '../gdbTypes.js';
 
 const USER = '/tmp/job/main.cpp';
 
+const STL = '/usr/include/c++/12/bits/stl_vector.h';
+
 function stop(line: number, opts: Partial<GDBStopInfo> = {}): GDBStopInfo {
     return { reason: 'end-stepping-range', line, file: USER, func: 'main', ...opts };
 }
+
+/** A stop inside libstdc++ — somewhere the user never wrote a line. */
+const LIBRARY = stop(1287, { file: STL, func: 'std::vector::push_back' });
+
+/** The stack while inside that call: their frame is still underneath. */
+const INSIDE_LIBRARY: GDBFrame[] = [
+    { level: 0, func: 'std::vector::push_back', file: STL, fullname: STL, line: 1287 },
+    { level: 1, func: 'main', file: USER, fullname: USER, line: 11 },
+];
 
 /**
  * A driver that replays a scripted list of stops. Every inspection call returns
  * nothing, so each test says only what it is about.
  */
-function scripted(stops: Array<GDBStopInfo | null>): SteppingDriver & { steps: number } {
+function scripted(
+    stops: Array<GDBStopInfo | null>,
+    opts: {
+        /** Stops handed back by finish(), in order. */
+        finishes?: Array<GDBStopInfo | null>;
+        /** The stack at any moment. Defaults to one still inside main. */
+        frames?: GDBFrame[];
+    } = {},
+): SteppingDriver & { steps: number; inspections: number; escapes: number } {
     let i = 0;
+    let f = 0;
+    const stack = opts.frames ?? [{ level: 0, func: 'main', file: USER, fullname: USER, line: 10 }];
     return {
         steps: 0,
+        inspections: 0,
+        escapes: 0,
         async next() { this.steps++; return stops[i++] ?? null; },
-        async getVariables(): Promise<GDBLocal[]> { return []; },
+        async finish() { this.escapes++; return opts.finishes?.[f++] ?? null; },
+        async getFrames(): Promise<GDBFrame[]> { return stack; },
+        async getVariables(): Promise<GDBLocal[]> { this.inspections++; return []; },
         async inspectPointer(): Promise<GDBField[]> { return []; },
         async evaluateExpression() { return ''; },
         async enumerateMapEntries() { return []; },
@@ -68,22 +93,67 @@ describe('collectSnapshots stopping conditions', () => {
         expect(r.snapshots.length).toBeLessThan(4);
     });
 
-    // Execution left main. Reported as complete, not truncated: every line the
-    // user wrote was captured.
-    it('ends cleanly when a stop has no source file', async () => {
-        const driver = scripted([stop(11), stop(0, { file: '', func: '__libc_start_call_main' })]);
+    // Execution left main for good — no frame below belongs to the user any
+    // more. Complete, not truncated: every line they wrote was captured.
+    it('ends cleanly once no frame belongs to the user any more', async () => {
+        const driver = scripted(
+            [stop(11), stop(0, { file: '', func: '__libc_start_call_main' })],
+            { frames: [{ level: 0, func: '__libc_start_call_main', file: '', fullname: '', line: 0 }] },
+        );
         const r = await collectSnapshots(driver, stop(10));
 
         expect(r.snapshots.map(s => s.line)).toEqual([10, 11]);
         expect(r.timedOut).toBe(false);
     });
 
-    // ...but only once something has been captured. A first stop with no file
-    // means the trace never started, which is a different failure.
-    it('does not treat a missing file as the end before anything is captured', async () => {
-        const driver = scripted([stop(11), stop(0, { reason: 'exited-normally' })]);
-        const r = await collectSnapshots(driver, stop(10, { file: '' }));
-        expect(r.snapshots.length).toBeGreaterThan(0);
+    // The frame after main has a source file on Windows — crtexe.c. The old
+    // "no file means the end" heuristic saw a file here and kept going.
+    it('ends on a CRT frame that does have a source file', async () => {
+        const driver = scripted(
+            [stop(240, { file: 'crtexe.c', func: '__tmainCRTStartup' })],
+            { frames: [{ level: 0, func: '__tmainCRTStartup', file: 'crtexe.c', fullname: 'crtexe.c', line: 240 }] },
+        );
+        const r = await collectSnapshots(driver, stop(10));
+
+        expect(r.snapshots.map(s => s.line)).toEqual([10]);
+        expect(r.timedOut).toBe(false);
+    });
+});
+
+describe('collectSnapshots escaping foreign frames', () => {
+    // Inside a library call with the user's frame still below: run out of it
+    // rather than stepping through, and pay for nothing on the way.
+    it('finishes out of a library frame instead of stepping through it', async () => {
+        const driver = scripted(
+            [LIBRARY, stop(0, { reason: 'exited-normally' })],
+            { finishes: [stop(11)], frames: INSIDE_LIBRARY },
+        );
+        const r = await collectSnapshots(driver, stop(10));
+
+        expect(driver.escapes).toBe(1);
+        expect(r.snapshots.map(s => s.line)).toEqual([10, 11]);
+    });
+
+    // The expensive part of a snapshot is the inspection. Doing it in a frame
+    // the user never wrote costs exactly as much and is worth nothing.
+    it('inspects nothing while outside the user source', async () => {
+        const driver = scripted(
+            [LIBRARY, stop(0, { reason: 'exited-normally' })],
+            { finishes: [stop(11)], frames: INSIDE_LIBRARY },
+        );
+        await collectSnapshots(driver, stop(10));
+
+        // Two inspections, for the two user-source stops — none for the frame
+        // in between.
+        expect(driver.inspections).toBe(2);
+    });
+
+    it('gives up when it cannot get back to the user source', async () => {
+        const driver = scripted([LIBRARY], { finishes: [null], frames: INSIDE_LIBRARY });
+        const r = await collectSnapshots(driver, stop(10));
+
+        expect(r.timedOut).toBe(true);
+        expect(r.snapshots.map(s => s.line)).toEqual([10]);
     });
 
     // next() returns null only when the step itself failed — a program that
@@ -117,17 +187,18 @@ describe('collectSnapshots stopping conditions', () => {
 });
 
 describe('collectSnapshots frame filtering', () => {
-    // Today's loop steps over calls, so a stop in another file is CRT or
-    // runtime code: step past it without paying for a snapshot.
-    it('steps through frames outside the user source without capturing them', async () => {
-        const driver = scripted([
-            stop(90, { file: '/usr/include/c++/12/bits/stl_vector.h', func: 'std::vector::push_back' }),
-            stop(11),
-            stop(0, { reason: 'exited-normally' }),
-        ]);
+    // A stop outside the user's file is never captured, whichever way the loop
+    // leaves it. This used to step through with next(); increment 4 escapes
+    // with finish() instead, and the snapshot list is the same either way.
+    it('never captures a stop outside the user source', async () => {
+        const driver = scripted(
+            [LIBRARY, stop(0, { reason: 'exited-normally' })],
+            { finishes: [stop(11)], frames: INSIDE_LIBRARY },
+        );
         const r = await collectSnapshots(driver, stop(10));
 
         expect(r.snapshots.map(s => s.line)).toEqual([10, 11]);
+        expect(r.snapshots.some(s => s.line === 1287)).toBe(false);
     });
 
     it('records the call stack alongside each snapshot', async () => {

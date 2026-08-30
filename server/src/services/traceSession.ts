@@ -11,7 +11,7 @@ import { rm, stat, open, writeFile } from 'fs/promises';
 import { GDBDriver } from './gdbDriver.js';
 import { intFromEnv } from '../env.js';
 import { isPointerType, isNullPointer, isStructType, isIntegralType, detectSTL } from './gdbValues.js';
-import type { GDBSnapshot, GDBStopInfo, GDBField, GDBLocal, STLSnapshot } from './gdbTypes.js';
+import type { GDBSnapshot, GDBStopInfo, GDBField, GDBFrame, GDBLocal, STLSnapshot } from './gdbTypes.js';
 
 const MAX_STEPS = 500;
 /** Wall-clock budget for one whole trace session, independent of the step cap. */
@@ -24,6 +24,15 @@ const MAX_OUTPUT_BYTES = intFromEnv('MAX_OUTPUT_BYTES', 1024 * 1024);
  * on screen can show thousands of elements usefully anyway.
  */
 const MAX_CONTAINER_ELEMENTS = intFromEnv('MAX_CONTAINER_ELEMENTS', 4096);
+/**
+ * How many times a trace may leave the user's code and come back before the
+ * loop treats it as not settling. Generous: measured on a BST-plus-STL program,
+ * a whole session takes 14 escapes with exec-next and 0 once GDB is told to
+ * skip std::.
+ */
+const MAX_ESCAPES = intFromEnv('MAX_ESCAPES', 200);
+/** Frames to unwind in one escape before giving up on getting back. */
+const MAX_FINISH_DEPTH = intFromEnv('MAX_FINISH_DEPTH', 8);
 
 export interface GDBSessionResult {
     snapshots: GDBSnapshot[];
@@ -52,6 +61,12 @@ function isTerminalReason(reason: string): boolean {
  */
 export interface SteppingDriver {
     next(): Promise<GDBStopInfo | null>;
+    /** Run out of the current frame. Used to leave code the user did not write
+     *  rather than stepping through it. */
+    finish(): Promise<GDBStopInfo | null>;
+    /** The call stack. Whether any frame belongs to the user's file is how the
+     *  loop tells "main has returned" from "we are inside a library call". */
+    getFrames(): Promise<GDBFrame[]>;
     getVariables(): Promise<GDBLocal[]>;
     inspectPointer(expr: string): Promise<GDBField[]>;
     evaluateExpression(expr: string): Promise<string>;
@@ -86,6 +101,7 @@ export async function collectSnapshots(
 ): Promise<CollectResult> {
     let timedOut = false;
     let aborted = false;
+    let escapes = 0;
 
     // Remember the user's source file path from the first stop
     const userSrcFile = firstStop.file; // e.g. "C:/Temp/.../main.cpp"
@@ -110,29 +126,48 @@ export async function collectSnapshots(
             break;
         }
 
-        // Execution has left the user's code for good. Stepping off the end
-        // of main lands in libc, which has no source and no debug info, and
-        // exec-next fails there — so this used to run on until the step
-        // failed and the whole trace got reported as truncated, when in fact
-        // every line of the user's program had been captured.
-        //
-        // Safe because the loop steps with exec-next, which steps OVER
-        // calls: a stop can only lack a source file once main has returned.
-        // Revisit if this ever moves to exec-step.
-        if (!stop.file && snapshots.length > 0) break;
-
         if (now() > deadline) {
             console.warn(`  [GDB] session budget of ${SESSION_BUDGET_MS}ms exhausted after ${steps} steps`);
             timedOut = true;
             break;
         }
 
-        // Skip CRT/runtime frames — only collect snapshots inside user source
-        if (stop.file && userSrcFile && stop.file !== userSrcFile) {
-            const nextStop = await driver.next();
-            if (!nextStop) { timedOut = true; break; }
-            stop = nextStop;
-            steps++;
+        // ── Not in the user's code ──────────────────────────────────────────
+        // Two different situations wear the same face, and the old code used a
+        // heuristic — "no source file, and something was captured already" — to
+        // tell them apart. It guessed wrong in both directions: the frame after
+        // main is crtexe.c on Windows, which HAS a file, and every frame inside
+        // libstdc++ has one too. The stack answers it without guessing.
+        if (userSrcFile && stop.file !== userSrcFile) {
+            const frames = await driver.getFrames();
+
+            // Nothing of the user's is left below: main has returned, and the
+            // trace is complete rather than truncated. Every line they wrote
+            // has been seen.
+            if (!frames.some(f => f.file === userSrcFile)) break;
+
+            // Their code is still down there, so this is a detour into the
+            // runtime. Run out of it instead of stepping through it, and
+            // capture nothing on the way — an inspection here costs exactly
+            // what one in user code costs and is worth nothing.
+            if (++escapes > MAX_ESCAPES) {
+                console.warn(`  [GDB] ${MAX_ESCAPES} escapes without settling — giving up`);
+                timedOut = true;
+                break;
+            }
+
+            let escaped: GDBStopInfo | null = null;
+            for (let i = 0; i < MAX_FINISH_DEPTH; i++) {
+                escaped = await driver.finish();
+                steps++;
+                if (!escaped) break;
+                if (isTerminalReason(escaped.reason) || escaped.file === userSrcFile) break;
+            }
+            if (!escaped) { timedOut = true; break; }
+            stop = escaped;
+            // Re-classify rather than stepping on: finish() lands at the START
+            // of the call-site line, so a next() here would skip that whole
+            // line, and any user function it goes on to call.
             continue;
         }
 
