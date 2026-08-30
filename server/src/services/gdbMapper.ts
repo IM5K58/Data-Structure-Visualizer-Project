@@ -113,10 +113,22 @@ export function snapshotsToTraceSteps(
     const knownAddrs = new Set<string>();            // addresses we have ALLOCed
     const addrToStruct = new Map<string, string>();  // addr → struct type name
 
-    // Track previous pointer values per variable to detect genuine new allocations
-    const prevPtrValues = new Map<string, string>(); // varName → previous address
+    /**
+     * Previous state is tracked PER FRAME, not per variable name.
+     *
+     * Once the tracer steps into functions, `n` in main and `n` in push_front
+     * are different variables that happen to share a name, and comparing one
+     * against the other invents changes that never happened. The key is the
+     * whole call path, so recursion separates too: main/insert/insert is a
+     * different activation from main/insert.
+     */
+    const frameKey = (snap: GDBSnapshot): string =>
+        (snap.callStack && snap.callStack.length ? snap.callStack : [snap.func]).join('/');
 
-    let prevLocals: GDBLocal[] = [];
+    // varName → previous address, per frame, to detect genuine new allocations
+    const prevPtrValues = new Map<string, Map<string, string>>();
+    const prevLocalsByFrame = new Map<string, GDBLocal[]>();
+
     let prevStructData = new Map<string, GDBField[]>();
     let prevValueStructData = new Map<string, GDBField[]>();
     let prevArrayReadings = new Map<string, string>();
@@ -138,6 +150,12 @@ export function snapshotsToTraceSteps(
     for (let i = 0; i < snapshots.length; i++) {
         const snap = snapshots[i];
         const isLast = i === snapshots.length - 1;
+
+        // What this frame looked like last time execution was in it — which is
+        // not the same as the previous snapshot, once calls are stepped into. A
+        // frame entered for the first time has no history, so everything in it
+        // reads as new, which is exactly right.
+        const framePrev = prevLocalsByFrame.get(frameKey(snap)) ?? [];
 
         // ── 0. Call stack diff ────────────────────────────────────────────────
         // Emit a STACK_FRAMES event only when the stack changed since the
@@ -167,7 +185,7 @@ export function snapshotsToTraceSteps(
             const addr = local.value;
             if (knownAddrs.has(addr)) continue;
 
-            const prevVal = prevPtrValues.get(local.name);
+            const prevVal = prevPtrValues.get(frameKey(snap))?.get(local.name);
             // Skip first sight: the variable might hold a garbage stack value
             // before its initialization line executes. Wait for a real change.
             if (prevVal === undefined) continue;
@@ -356,7 +374,7 @@ export function snapshotsToTraceSteps(
         for (const local of snap.locals) {
             if (!isPointerType(local.type)) continue;
 
-            const prev = prevLocals.find(l => l.name === local.name);
+            const prev = framePrev.find(l => l.name === local.name);
             if (prev && prev.value === local.value) continue;
 
             // Only emit SET_LABEL if target is a known node or null
@@ -379,7 +397,7 @@ export function snapshotsToTraceSteps(
             // Struct-type locals are handled in section 5; skip here
             if (snap.valueStructData.has(local.name)) continue;
 
-            const prev = prevLocals.find(l => l.name === local.name);
+            const prev = framePrev.find(l => l.name === local.name);
             if (prev && prev.value === local.value) continue;
 
             push({
@@ -388,6 +406,11 @@ export function snapshotsToTraceSteps(
                 var: local.name,
                 value: local.value,
                 target: local.type,
+                // Which frame this belongs to. Two frames can hold variables of
+                // the same name — main's `n` and a callee's `n` — and without
+                // this the client has no way to keep them apart, so the second
+                // reads as a change to the first.
+                frames: cs.slice(),
                 raw: `[Line ${snap.line}] ${local.type} ${local.name} = ${local.value}`,
             });
         }
@@ -712,10 +735,12 @@ export function snapshotsToTraceSteps(
         // Update previous state
         for (const local of snap.locals) {
             if (isPointerType(local.type)) {
-                prevPtrValues.set(local.name, local.value);
+                let byName = prevPtrValues.get(frameKey(snap));
+                if (!byName) { byName = new Map(); prevPtrValues.set(frameKey(snap), byName); }
+                byName.set(local.name, local.value);
             }
         }
-        prevLocals = snap.locals;
+        prevLocalsByFrame.set(frameKey(snap), snap.locals);
         prevStructData = snap.structData;
         prevValueStructData = snap.valueStructData;
         prevArrayReadings = snap.arrayReadings;
