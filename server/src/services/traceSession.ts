@@ -33,6 +33,31 @@ const MAX_CONTAINER_ELEMENTS = intFromEnv('MAX_CONTAINER_ELEMENTS', 4096);
 const MAX_ESCAPES = intFromEnv('MAX_ESCAPES', 200);
 /** Frames to unwind in one escape before giving up on getting back. */
 const MAX_FINISH_DEPTH = intFromEnv('MAX_FINISH_DEPTH', 8);
+/**
+ * How many times one source line is described before it is demoted.
+ *
+ * Only meaningful with step-into: without it a line recurs at most once per
+ * loop turn, with it once per turn per depth. Measured on a BST fixture —
+ * uncapped 414 captures, 233 of them one recursive function; capped at eight,
+ * 98 captures still covering all 21 distinct lines.
+ */
+const CAPTURE_VISITS = intFromEnv('CAPTURE_VISITS', 8);
+/**
+ * Step INTO functions the user wrote instead of over them.
+ *
+ * Off by default while it is measured against real traffic. This is the whole
+ * point of the phase: with exec-next, everything inside insert() or
+ * push_front() is invisible, which is most of what a data-structure
+ * visualiser exists to show.
+ */
+const STEP_INTO = process.env.GDB_STEP_INTO === 'true';
+/**
+ * Functions GDB should not step into. An accelerator, not a requirement —
+ * escaping foreign frames already handles them — but a cheap one: measured on
+ * the deployment image, a BST-plus-STL program takes 959 steps with neither,
+ * 160 with escaping alone, and 133 with both.
+ */
+const SKIP_PATTERNS = ['^std::', '^__gnu_cxx::'];
 
 export interface GDBSessionResult {
     snapshots: GDBSnapshot[];
@@ -61,6 +86,8 @@ function isTerminalReason(reason: string): boolean {
  */
 export interface SteppingDriver {
     next(): Promise<GDBStopInfo | null>;
+    /** Step INTO calls rather than over them. */
+    step(): Promise<GDBStopInfo | null>;
     /** Run out of the current frame. Used to leave code the user did not write
      *  rather than stepping through it. */
     finish(): Promise<GDBStopInfo | null>;
@@ -98,10 +125,15 @@ export async function collectSnapshots(
     firstStop: GDBStopInfo,
     shouldAbort: () => boolean = () => false,
     now: () => number = Date.now,
+    stepInto: boolean = STEP_INTO,
 ): Promise<CollectResult> {
     let timedOut = false;
     let aborted = false;
     let escapes = 0;
+    /** How often each `func:line` has been described, and how often one was
+     *  passed over after hitting the cap. */
+    const visits = new Map<string, number>();
+    const elided = new Map<string, number>();
 
     // Remember the user's source file path from the first stop
     const userSrcFile = firstStop.file; // e.g. "C:/Temp/.../main.cpp"
@@ -168,6 +200,27 @@ export async function collectSnapshots(
             // Re-classify rather than stepping on: finish() lands at the START
             // of the call-site line, so a next() here would skip that whole
             // line, and any user function it goes on to call.
+            continue;
+        }
+
+        // ── Has this line been described enough times? ──────────────────────
+        // Stepping into functions means the same line comes back at every
+        // depth of a recursion and on every turn of a loop. Measured on a BST
+        // fixture: uncapped, one program produced 414 captures, 233 of them
+        // from a single fib(); capped at eight, 98 captures still covered all
+        // 21 distinct lines. Past the cap the line is still stepped, just not
+        // described — and stepped OVER, so it cannot recurse further.
+        const visitKey = `${stop.func}:${stop.line}`;
+        const visitCount = (visits.get(visitKey) ?? 0) + 1;
+        visits.set(visitKey, visitCount);
+        const demoted = stepInto && visitCount > CAPTURE_VISITS;
+
+        if (demoted) {
+            elided.set(visitKey, (elided.get(visitKey) ?? 0) + 1);
+            const skipped = await driver.next();
+            if (!skipped) { timedOut = true; break; }
+            stop = skipped;
+            steps++;
             continue;
         }
 
@@ -291,20 +344,32 @@ export async function collectSnapshots(
         const callStack = await driver.getCallStack();
         snapshots.push({ line: stop.line, func: stop.func, locals, structData, valueStructData, arrayReadings, stlContainers, callStack });
 
-        // next() returns null only when the step failed — it swallows its own
-        // 6s stop timeout. A program that simply ended produces a *stopped
-        // with a terminal reason instead, and breaks at the top of the loop.
-        // So this branch means GDB stopped responding, and the trace is a
+        // next() and step() return null only when the step itself failed — both
+        // swallow their own stop timeout. A program that simply ended produces a
+        // *stopped with a terminal reason instead, and breaks at the top of the
+        // loop. So this branch means GDB stopped responding, and the trace is a
         // prefix. It used to break with timedOut still false, which sent a
         // truncated trace back as HTTP 200 success, indistinguishable from a
         // program that ran to completion.
-        const nextStop = await driver.next();
+        //
+        // Which one to use is the whole of this phase. exec-next steps OVER
+        // calls, so everything inside a function the user wrote is invisible;
+        // exec-step goes in. Past the visit cap a line is demoted to exec-next,
+        // which is what keeps a recursive call or a hot loop from spending the
+        // entire budget re-describing the same line at a new depth.
+        const advance = stepInto ? driver.step() : driver.next();
+        const nextStop = await advance;
         if (!nextStop) { timedOut = true; break; }
         stop = nextStop;
         steps++;
     }
 
     if (steps >= MAX_STEPS) timedOut = true;
+
+    if (elided.size > 0) {
+        const total = [...elided.values()].reduce((a, b) => a + b, 0);
+        console.log(`  [GDB] ${total} repeat visits passed over across ${elided.size} lines`);
+    }
 
     return { snapshots, timedOut, aborted, lastStop: stop };
 }
@@ -335,6 +400,16 @@ export async function runGDBSession(
         console.log('  [GDB] started OK, setting breakpoint at main');
         await driver.setBreakpoint('main');
         await driver.applyExecWrapper();
+
+        // Only worth asking for when we are actually stepping into things.
+        // Rejection is fine — escaping foreign frames already covers this, and
+        // GDB 13 refuses spellings GDB 16 accepts.
+        if (STEP_INTO) {
+            for (const pattern of SKIP_PATTERNS) {
+                const accepted = await driver.addSkip(pattern);
+                if (!accepted) console.warn(`  [GDB] skip ${pattern} refused — escaping instead`);
+            }
+        }
         console.log('  [GDB] breakpoint set, running with redirect');
 
         let stop: GDBStopInfo;

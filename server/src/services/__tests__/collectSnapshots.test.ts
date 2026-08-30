@@ -44,7 +44,7 @@ function scripted(
         /** The stack at any moment. Defaults to one still inside main. */
         frames?: GDBFrame[];
     } = {},
-): SteppingDriver & { steps: number; inspections: number; escapes: number } {
+): SteppingDriver & { steps: number; inspections: number; escapes: number; overs: number; ins: number } {
     let i = 0;
     let f = 0;
     const stack = opts.frames ?? [{ level: 0, func: 'main', file: USER, fullname: USER, line: 10 }];
@@ -52,7 +52,11 @@ function scripted(
         steps: 0,
         inspections: 0,
         escapes: 0,
-        async next() { this.steps++; return stops[i++] ?? null; },
+        /** How the loop chose to move: over a call, or into one. */
+        overs: 0,
+        ins: 0,
+        async next() { this.steps++; this.overs++; return stops[i++] ?? null; },
+        async step() { this.steps++; this.ins++; return stops[i++] ?? null; },
         async finish() { this.escapes++; return opts.finishes?.[f++] ?? null; },
         async getFrames(): Promise<GDBFrame[]> { return stack; },
         async getVariables(): Promise<GDBLocal[]> { this.inspections++; return []; },
@@ -205,5 +209,87 @@ describe('collectSnapshots frame filtering', () => {
         const driver = scripted([stop(0, { reason: 'exited-normally' })]);
         const r = await collectSnapshots(driver, stop(10));
         expect(r.snapshots[0].callStack).toEqual(['main']);
+    });
+});
+
+/**
+ * Step-into, behind its flag. The whole phase exists for this: with exec-next,
+ * everything inside a function the user wrote is invisible, which is most of
+ * what a data-structure visualiser is for.
+ */
+describe('collectSnapshots stepping into functions', () => {
+    const ON = (stops: Array<GDBStopInfo | null>, opts = {}) => {
+        const driver = scripted(stops, opts);
+        return { driver, run: (first = stop(10)) => collectSnapshots(driver, first, () => false, Date.now, true) };
+    };
+
+    it('steps over calls when the flag is off', async () => {
+        const driver = scripted([stop(11), stop(0, { reason: 'exited-normally' })]);
+        await collectSnapshots(driver, stop(10), () => false, Date.now, false);
+
+        expect(driver.ins).toBe(0);
+        expect(driver.overs).toBeGreaterThan(0);
+    });
+
+    it('steps into calls when the flag is on', async () => {
+        const { driver, run } = ON([stop(11), stop(0, { reason: 'exited-normally' })]);
+        await run();
+
+        expect(driver.ins).toBeGreaterThan(0);
+        expect(driver.overs).toBe(0);
+    });
+
+    // A line inside a callee is exactly what exec-next could never show.
+    it('captures lines in a function the user wrote', async () => {
+        const inCallee = (line: number) => stop(line, { func: 'push_front' });
+        const { run } = ON([inCallee(6), inCallee(7), stop(14), stop(0, { reason: 'exited-normally' })]);
+        const r = await run(stop(13));
+
+        expect(r.snapshots.map(s => `${s.func}:${s.line}`))
+            .toEqual(['main:13', 'push_front:6', 'push_front:7', 'main:14']);
+    });
+});
+
+describe('collectSnapshots visit cap', () => {
+    const recursive = (n: number) =>
+        Array.from({ length: n }, () => stop(21, { func: 'insert' }));
+
+    it('stops describing a line once it has been seen enough times', async () => {
+        const driver = scripted([...recursive(30), stop(0, { reason: 'exited-normally' })]);
+        const r = await collectSnapshots(driver, stop(21, { func: 'insert' }), () => false, Date.now, true);
+
+        // Eight captures of that line, and every later visit stepped but not
+        // described. 414 captures became 98 on the real fixture this models.
+        expect(r.snapshots.filter(s => s.func === 'insert').length).toBe(8);
+        expect(driver.steps).toBeGreaterThan(8);
+    });
+
+    // Demoting means stepping OVER, so a recursive line cannot keep descending
+    // once it has been described enough.
+    it('steps over a demoted line rather than into it', async () => {
+        const driver = scripted([...recursive(20), stop(0, { reason: 'exited-normally' })]);
+        await collectSnapshots(driver, stop(21, { func: 'insert' }), () => false, Date.now, true);
+
+        expect(driver.ins).toBe(8);
+        expect(driver.overs).toBeGreaterThan(0);
+    });
+
+    it('counts each function separately, so one hot line does not silence another', async () => {
+        const stops = [
+            ...Array.from({ length: 12 }, () => stop(21, { func: 'insert' })),
+            stop(31, { func: 'height' }),
+            stop(0, { reason: 'exited-normally' }),
+        ];
+        const driver = scripted(stops);
+        const r = await collectSnapshots(driver, stop(21, { func: 'insert' }), () => false, Date.now, true);
+
+        expect(r.snapshots.some(s => s.func === 'height')).toBe(true);
+    });
+
+    it('does not cap anything while stepping over', async () => {
+        const driver = scripted([...recursive(30), stop(0, { reason: 'exited-normally' })]);
+        const r = await collectSnapshots(driver, stop(21, { func: 'insert' }), () => false, Date.now, false);
+
+        expect(r.snapshots.length).toBeGreaterThan(8);
     });
 });
