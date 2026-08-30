@@ -4,6 +4,15 @@ export interface LocalVar {
     type: string;
     value: string;
     changed?: boolean; // true if changed since previous step
+    /**
+     * Which call frame this belongs to, as `main/insert/insert`.
+     *
+     * A name alone stopped identifying a variable once the tracer could step
+     * into functions: main's `n` and a callee's `n` are different variables,
+     * and recursion gives one function several live frames at once. Absent on
+     * traces recorded before that was possible.
+     */
+    frame?: string;
 }
 
 // ===== Command Types =====

@@ -222,6 +222,10 @@ export function mapTraceToCommands(steps: TraceStep[]): Command[] {
                     label: step.var,        // variable name
                     value: step.value,      // new value (as string from GDB)
                     property: step.target as string, // C++ type (reused field)
+                    // Which frame it belongs to. Two frames can hold variables
+                    // of the same name, so the panel needs this to keep them
+                    // apart rather than showing one overwrite the other.
+                    frames: step.frames,
                     raw,
                     line,
                 });

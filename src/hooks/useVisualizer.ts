@@ -390,19 +390,41 @@ function replayToStep(commands: Command[], targetStep: number): DataStructureSta
     return structures;
 }
 
+/**
+ * Fold one LOCAL_VAR_UPDATE into a list of locals.
+ *
+ * Shared by the forward reducer and the replay used for stepping backwards.
+ * They have to agree: if one matched on name and the other on name-and-frame,
+ * stepping back would land somewhere stepping forward never was.
+ *
+ * A variable is identified by its name AND its frame. Once the tracer steps
+ * into functions, main's `n` and a callee's `n` are different variables, and
+ * recursion gives one function several live frames at once — matching on the
+ * name alone made every crossing look like a change, and the value flickered.
+ */
+function applyLocalVar(vars: LocalVar[], cmd: Command, changed: boolean): LocalVar[] {
+    const entry: LocalVar = {
+        name: cmd.label ?? '',
+        type: cmd.property ?? '',
+        value: String(cmd.value ?? ''),
+        frame: cmd.frames?.join('/'),
+        changed,
+    };
+    const idx = vars.findIndex(v => v.name === entry.name && v.frame === entry.frame);
+    if (idx >= 0) {
+        const next = vars.slice();
+        next[idx] = entry;
+        return next;
+    }
+    return [...vars, entry];
+}
+
 function replayLocalVarsToStep(commands: Command[], targetStep: number): LocalVar[] {
-    const vars: LocalVar[] = [];
+    let vars: LocalVar[] = [];
     for (let i = 0; i <= targetStep; i++) {
         const cmd = commands[i];
         if (cmd.type !== 'LOCAL_VAR_UPDATE') continue;
-        const name = cmd.label ?? '';
-        const value = String(cmd.value ?? '');
-        const type = cmd.property ?? '';
-        const isLast = i === targetStep;
-        const idx = vars.findIndex(v => v.name === name);
-        const entry: LocalVar = { name, type, value, changed: isLast };
-        if (idx >= 0) vars[idx] = entry;
-        else vars.push(entry);
+        vars = applyLocalVar(vars, cmd, i === targetStep);
     }
     return vars;
 }
@@ -444,18 +466,11 @@ export function reducer(state: VisualizerState, action: VisualizerAction): Visua
 
             // LOCAL_VAR_UPDATE: update localVars, skip executeCommand
             if (command.type === 'LOCAL_VAR_UPDATE') {
-                const name = command.label ?? '';
-                const value = String(command.value ?? '');
-                const type = command.property ?? '';
-                const cleared: LocalVar[] = state.localVars.map(v => ({ ...v, changed: false }));
-                const idx = cleared.findIndex(v => v.name === name);
-                const entry: LocalVar = { name, type, value, changed: true };
-                if (idx >= 0) cleared[idx] = entry;
-                else cleared.push(entry);
+                const cleared = state.localVars.map(v => ({ ...v, changed: false }));
                 return {
                     ...state,
                     currentStep: nextStep,
-                    localVars: cleared,
+                    localVars: applyLocalVar(cleared, command, true),
                     terminalOutput: state.terminalOutput + (command.output || ''),
                 };
             }
