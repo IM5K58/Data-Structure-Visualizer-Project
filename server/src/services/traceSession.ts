@@ -45,12 +45,18 @@ const CAPTURE_VISITS = intFromEnv('CAPTURE_VISITS', 8);
 /**
  * Step INTO functions the user wrote instead of over them.
  *
- * Off by default while it is measured against real traffic. This is the whole
- * point of the phase: with exec-next, everything inside insert() or
- * push_front() is invisible, which is most of what a data-structure
- * visualiser exists to show.
+ * On by default. With exec-next everything inside insert() or push_front() was
+ * invisible, which is most of what a data-structure visualiser exists to show —
+ * the program that started this phase traced to nothing but its own main.
+ *
+ * Measured across the fixtures before flipping this: distinct captured lines
+ * 8 → 11, 10 → 23 and 7 → 10; functions 1 → 2, 1 → 4 and 1 → 2; no fixture
+ * losing lines, none newly timing out, every program's output unchanged. The
+ * one fixture with no calls of its own is untouched at 16 lines either way.
+ *
+ * GDB_STEP_INTO=false is the way back.
  */
-const STEP_INTO = process.env.GDB_STEP_INTO === 'true';
+const STEP_INTO = process.env.GDB_STEP_INTO !== 'false';
 /**
  * Functions GDB should not step into. An accelerator, not a requirement —
  * escaping foreign frames already handles them — but a cheap one: measured on
